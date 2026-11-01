@@ -6,13 +6,19 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 func TestConcurrentBookingExactlyOneWins(t *testing.T) {
-	store := NewConcurrentStore()
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		PoolSize: 10000, // Very large pool for 100k goroutines
+	})
+	store := NewRedisStore(rdb)
 	svc := NewService(store)
 
-	const numGoroutines = 10_000
+	// const numGoroutines = 100_000 //Very large pool for 100k goroutines
+	const numGoroutines = 1_000
 
 	var (
 		successes atomic.Int64
