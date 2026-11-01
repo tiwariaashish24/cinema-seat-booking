@@ -11,17 +11,17 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) Book(b Booking) error {
-	if _, exist := s.bookings[b.SeatId]; exist {
+	if _, exist := s.bookings[b.SeatID]; exist {
 		return ErrorSeatAlreadyBooked
 	}
-	s.bookings[b.SeatId] = b
+	s.bookings[b.SeatID] = b
 	return nil
 }
 
-func (s *MemoryStore) ListBookings(MovieId string) []Booking {
+func (s *MemoryStore) ListBookings(MovieID string) []Booking {
 	var result []Booking
 	for _, b := range s.bookings {
-		if b.MovieId == MovieId {
+		if b.MovieID == MovieID {
 			result = append(result, b)
 		}
 	}

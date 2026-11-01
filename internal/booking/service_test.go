@@ -27,9 +27,9 @@ func TestConcurrentBookingExactlyOneWins(t *testing.T) {
 			defer wg.Done()
 
 			err := svc.Book(Booking{
-				MovieId: "screen-1",
-				SeatId:  "A1",
-				UserId:  uuid.New().String(),
+				MovieID: "screen-1",
+				SeatID:  "A1",
+				UserID:  uuid.New().String(),
 			})
 
 			if err == nil {
