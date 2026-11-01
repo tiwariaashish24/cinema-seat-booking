@@ -17,8 +17,8 @@ func TestConcurrentBookingExactlyOneWins(t *testing.T) {
 	store := NewRedisStore(rdb)
 	svc := NewService(store)
 
-	// const numGoroutines = 100_000 //Very large pool for 100k goroutines
-	const numGoroutines = 1_000
+	const numGoroutines = 100_000 //Very large pool for 100k goroutines
+	// const numGoroutines = 1_000
 
 	var (
 		successes atomic.Int64
