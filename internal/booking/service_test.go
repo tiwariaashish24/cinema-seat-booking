@@ -4,18 +4,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"uuid"
+
+	"github.com/google/uuid"
 )
 
-func main() {
-
-}
-
 func TestConcurrentBookingExactlyOneWins(t *testing.T) {
-	store := NewMemoryStore()
+	store := NewConcurrentStore()
 	svc := NewService(store)
 
-	const nuwGoroutines = 100_00 ///100k user try to booking the seat at same time
+	const numGoroutines = 10_000
 
 	var (
 		successes atomic.Int64
@@ -23,22 +20,32 @@ func TestConcurrentBookingExactlyOneWins(t *testing.T) {
 		wg        sync.WaitGroup
 	)
 
-	wg.Add(nuwGoroutines)
-	for i := range nuwGoroutines {
+	wg.Add(numGoroutines)
+
+	for i := range numGoroutines {
 		go func(userNum int) {
 			defer wg.Done()
+
 			err := svc.Book(Booking{
 				MovieId: "screen-1",
 				SeatId:  "A1",
 				UserId:  uuid.New().String(),
 			})
+
 			if err == nil {
 				successes.Add(1)
 			} else {
 				failures.Add(1)
 			}
-
 		}(i)
 	}
-	wg.Add()
+
+	wg.Wait()
+	if got := successes.Load(); got != 1 {
+		t.Errorf("expected exactly 1 success, got %d", got)
+	}
+
+	if got := failures.Load(); got != int64(numGoroutines-1) {
+		t.Errorf("expected %d failures, got %d", numGoroutines-1, got)
+	}
 }
