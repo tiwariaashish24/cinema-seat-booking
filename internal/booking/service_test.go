@@ -99,6 +99,7 @@ func TestConcurrentBookingExactlyOneWins(t *testing.T) {
 					default:
 					}
 				}
+
 			}
 		}()
 	}
@@ -161,5 +162,95 @@ func TestConcurrentBookingExactlyOneWins(t *testing.T) {
 			"expected 0 unexpected errors, got %d",
 			totalUnexpected,
 		)
+	}
+}
+
+func TestConcurrentBookingDifferentSeats(t *testing.T) {
+	const (
+		numRequests = 10_000
+		numWorkers  = 256
+	)
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "127.0.0.1:6379",
+		PoolSize: 16,
+	})
+	t.Cleanup(func() {
+		if err := rdb.Close(); err != nil {
+			t.Errorf("close Redis client: %v", err)
+		}
+	})
+	if err := rdb.Ping(t.Context()).Err(); err != nil {
+		t.Fatalf("connect to Redis: %v", err)
+	}
+
+	svc := NewService(NewRedisStore(rdb))
+	movieID := uuid.NewString()
+	seatKeys := make([]string, numRequests)
+	for i := range numRequests {
+		seatKeys[i] = fmt.Sprintf("seat:%s:A%d", movieID, i)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := rdb.Del(cleanupCtx, seatKeys...).Err(); err != nil {
+			t.Errorf("clean up test seats: %v", err)
+		}
+	})
+
+	var (
+		successes       atomic.Int64
+		conflicts       atomic.Int64
+		unexpectedCount atomic.Int64
+		wg              sync.WaitGroup
+	)
+	unexpectedErrors := make(chan error, 1)
+	requests := make(chan int, numWorkers)
+
+	wg.Add(numWorkers)
+	for range numWorkers {
+		go func() {
+			defer wg.Done()
+			for seatNumber := range requests {
+				err := svc.Book(Booking{
+					MovieID: movieID,
+					SeatID:  fmt.Sprintf("A%d", seatNumber),
+					UserID:  uuid.NewString(),
+				})
+				switch {
+				case err == nil:
+					successes.Add(1)
+				case errors.Is(err, ErrorSeatAlreadyBooked):
+					conflicts.Add(1)
+				default:
+					unexpectedCount.Add(1)
+					select {
+					case unexpectedErrors <- err:
+					default:
+					}
+				}
+			}
+		}()
+	}
+
+	for i := range numRequests {
+		requests <- i
+	}
+	close(requests)
+	wg.Wait()
+
+	select {
+	case err := <-unexpectedErrors:
+		t.Errorf("unexpected booking error: %v", err)
+	default:
+	}
+	if got := successes.Load(); got != numRequests {
+		t.Errorf("expected %d successful bookings, got %d", numRequests, got)
+	}
+	if got := conflicts.Load(); got != 0 {
+		t.Errorf("expected no booking conflicts, got %d", got)
+	}
+	if got := unexpectedCount.Load(); got != 0 {
+		t.Errorf("expected no unexpected errors, got %d", got)
 	}
 }
