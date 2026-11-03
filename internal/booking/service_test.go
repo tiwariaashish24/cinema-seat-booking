@@ -78,7 +78,7 @@ func TestConcurrentBookingExactlyOneWins(t *testing.T) {
 			defer wg.Done()
 
 			for range requests {
-				err := svc.Book(Booking{
+				_, err := svc.Book(Booking{
 					MovieID: movieID,
 					SeatID:  seatID,
 					UserID:  uuid.NewString(),
@@ -212,7 +212,7 @@ func TestConcurrentBookingDifferentSeats(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for seatNumber := range requests {
-				err := svc.Book(Booking{
+				_, err := svc.Book(Booking{
 					MovieID: movieID,
 					SeatID:  fmt.Sprintf("A%d", seatNumber),
 					UserID:  uuid.NewString(),

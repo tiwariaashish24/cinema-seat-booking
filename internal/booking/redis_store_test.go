@@ -43,7 +43,7 @@ func TestConcurrentBooking(t *testing.T) {
 				UserID:  "user" + string(rune('0'+userID)),
 			}
 
-			err := store.Book(booking)
+			_, err := store.Book(booking)
 			if err == nil {
 				mu.Lock()
 				successCount++
@@ -102,7 +102,7 @@ func TestDifferentSeatsConcurrent(t *testing.T) {
 				UserID:  "user123",
 			}
 
-			err := store.Book(booking)
+			_, err := store.Book(booking)
 			if err == nil {
 				mu.Lock()
 				successCount++

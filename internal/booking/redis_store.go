@@ -77,19 +77,44 @@ func (s *RedisStore) releaseLock(ctx context.Context, movieID, seatID string) er
 	return nil
 }
 
-func (s *RedisStore) Book(b Booking) error {
+func (s *RedisStore) Book(b Booking) (Booking, error) {
 	session, err := s.hold(b)
 	if err != nil {
-		return err
+		return Booking{}, err
 	}
 
 	log.Printf("Session booked %v", session)
 
-	return nil
+	return session, nil
 }
 
 func (s *RedisStore) ListBookings(movieID string) []Booking {
-	return []Booking{}
+	ctx := context.Background()
+	pattern := fmt.Sprintf("seat:%s:*", movieID)
+
+	iter := s.rdb.Scan(ctx, 0, pattern, 0).Iterator()
+	var bookings []Booking
+
+	for iter.Next(ctx) {
+		key := iter.Val()
+		val, err := s.rdb.Get(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+
+		var b Booking
+		if err := json.Unmarshal([]byte(val), &b); err != nil {
+			continue
+		}
+
+		bookings = append(bookings, b)
+	}
+
+	if err := iter.Err(); err != nil {
+		log.Printf("Error scanning bookings: %v", err)
+	}
+
+	return bookings
 }
 
 func (s *RedisStore) ListMovies() []Movie {
@@ -98,6 +123,170 @@ func (s *RedisStore) ListMovies() []Movie {
 		{ID: "2", Title: "Inception", Description: "A thief who steals corporate secrets through dream-sharing technology.", Seats: 120},
 		{ID: "3", Title: "Interstellar", Description: "A team of explorers travel through a wormhole in space.", Seats: 80},
 	}
+}
+
+func (s *RedisStore) GetBooking(bookingID string) (Booking, error) {
+	ctx := context.Background()
+	sessionKeyVal := sessionKey(bookingID)
+
+	// Get the seat key from session mapping
+	seatKey, err := s.rdb.Get(ctx, sessionKeyVal).Result()
+	if err == redis.Nil {
+		return Booking{}, ErrorBookingNotFound
+	}
+	if err != nil {
+		return Booking{}, fmt.Errorf("get session: %w", err)
+	}
+
+	// Get the booking data
+	val, err := s.rdb.Get(ctx, seatKey).Result()
+	if err == redis.Nil {
+		return Booking{}, ErrorBookingNotFound
+	}
+	if err != nil {
+		return Booking{}, fmt.Errorf("get booking: %w", err)
+	}
+
+	var b Booking
+	if err := json.Unmarshal([]byte(val), &b); err != nil {
+		return Booking{}, fmt.Errorf("unmarshal booking: %w", err)
+	}
+
+	return b, nil
+}
+
+func (s *RedisStore) ConfirmBooking(bookingID string) error {
+	ctx := context.Background()
+
+	// Get the booking
+	b, err := s.GetBooking(bookingID)
+	if err != nil {
+		return err
+	}
+
+	// Check if already confirmed
+	if b.Status == "confirmed" {
+		return ErrorBookingConfirmed
+	}
+
+	// Check if expired
+	if time.Now().After(b.ExpiresAt) && b.Status == "held" {
+		return ErrorBookingExpired
+	}
+
+	// Acquire lock for the seat
+	acquired, err := s.acquireLock(ctx, b.MovieID, b.SeatID)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return ErrorSeatAlreadyBooked
+	}
+	defer s.releaseLock(ctx, b.MovieID, b.SeatID)
+
+	// Update booking status to confirmed
+	b.Status = "confirmed"
+	b.ExpiresAt = time.Time{} // Clear expiration for confirmed bookings
+
+	seatKey := fmt.Sprintf("seat:%s:%s", b.MovieID, b.SeatID)
+	val, err := json.Marshal(b)
+	if err != nil {
+		return fmt.Errorf("marshal booking: %w", err)
+	}
+
+	// Set without TTL for confirmed bookings
+	if err := s.rdb.Set(ctx, seatKey, val, 0).Err(); err != nil {
+		return fmt.Errorf("update booking: %w", err)
+	}
+
+	// Update session mapping without TTL
+	sessionKeyVal := sessionKey(bookingID)
+	if err := s.rdb.Set(ctx, sessionKeyVal, seatKey, 0).Err(); err != nil {
+		return fmt.Errorf("update session: %w", err)
+	}
+
+	log.Printf("Booking confirmed: %s", bookingID)
+	return nil
+}
+
+func (s *RedisStore) CancelBooking(bookingID string) error {
+	ctx := context.Background()
+
+	// Get the booking
+	b, err := s.GetBooking(bookingID)
+	if err != nil {
+		return err
+	}
+
+	// Acquire lock for the seat
+	acquired, err := s.acquireLock(ctx, b.MovieID, b.SeatID)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return ErrorSeatAlreadyBooked
+	}
+	defer s.releaseLock(ctx, b.MovieID, b.SeatID)
+
+	// Delete the seat booking
+	seatKey := fmt.Sprintf("seat:%s:%s", b.MovieID, b.SeatID)
+	if err := s.rdb.Del(ctx, seatKey).Err(); err != nil {
+		return fmt.Errorf("delete booking: %w", err)
+	}
+
+	// Delete the session mapping
+	sessionKeyVal := sessionKey(bookingID)
+	if err := s.rdb.Del(ctx, sessionKeyVal).Err(); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+
+	log.Printf("Booking cancelled: %s", bookingID)
+	return nil
+}
+
+func (s *RedisStore) ReleaseExpiredSeats() (int, error) {
+	ctx := context.Background()
+	pattern := "seat:*:*"
+
+	iter := s.rdb.Scan(ctx, 0, pattern, 0).Iterator()
+	releasedCount := 0
+
+	for iter.Next(ctx) {
+		key := iter.Val()
+		val, err := s.rdb.Get(ctx, key).Result()
+		if err != nil {
+			continue
+		}
+
+		var b Booking
+		if err := json.Unmarshal([]byte(val), &b); err != nil {
+			continue
+		}
+
+		// Only release held bookings that have expired
+		if b.Status == "held" && time.Now().After(b.ExpiresAt) {
+			// Delete the seat booking
+			if err := s.rdb.Del(ctx, key).Err(); err != nil {
+				log.Printf("Failed to delete expired booking %s: %v", b.ID, err)
+				continue
+			}
+
+			// Delete the session mapping
+			sessionKeyVal := sessionKey(b.ID)
+			if err := s.rdb.Del(ctx, sessionKeyVal).Err(); err != nil {
+				log.Printf("Failed to delete session for %s: %v", b.ID, err)
+			}
+
+			releasedCount++
+			log.Printf("Released expired booking: %s (seat %s:%s)", b.ID, b.MovieID, b.SeatID)
+		}
+	}
+
+	if err := iter.Err(); err != nil {
+		log.Printf("Error scanning for expired bookings: %v", err)
+	}
+
+	return releasedCount, nil
 }
 
 func (s *RedisStore) hold(b Booking) (Booking, error) {
@@ -124,6 +313,8 @@ func (s *RedisStore) hold(b Booking) (Booking, error) {
 	key := fmt.Sprintf("seat:%s:%s", b.MovieID, b.SeatID)
 
 	b.ID = id
+	b.Status = "held"
+	b.ExpiresAt = now.Add(defaultHoldTTL)
 	val, err := json.Marshal(b)
 	if err != nil {
 		return Booking{}, fmt.Errorf("marshal booking: %w", err)
@@ -158,12 +349,5 @@ func (s *RedisStore) hold(b Booking) (Booking, error) {
 		return Booking{}, fmt.Errorf("save booking session: %w", err)
 	}
 
-	return Booking{
-		ID:        id,
-		MovieID:   b.MovieID,
-		SeatID:    b.SeatID,
-		UserID:    b.UserID,
-		Status:    "held",
-		ExpiresAt: now.Add(defaultHoldTTL),
-	}, nil
+	return b, nil
 }

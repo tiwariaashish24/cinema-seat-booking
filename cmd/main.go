@@ -35,7 +35,8 @@ func main() {
 			return
 		}
 
-		if err := service.Book(b); err != nil {
+		bookingResult, err := service.Book(b)
+		if err != nil {
 			if err == booking.ErrorSeatAlreadyBooked {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
@@ -45,7 +46,86 @@ func main() {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(b)
+		json.NewEncoder(w).Encode(bookingResult)
+	})
+
+	http.HandleFunc("/booking/", func(w http.ResponseWriter, r *http.Request) {
+		bookingID := r.URL.Path[len("/booking/"):]
+		if bookingID == "" {
+			http.Error(w, "Booking ID is required", http.StatusBadRequest)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodGet:
+			b, err := service.GetBooking(bookingID)
+			if err != nil {
+				if err == booking.ErrorBookingNotFound {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(b)
+
+		case http.MethodPost:
+			// Confirm booking
+			if err := service.ConfirmBooking(bookingID); err != nil {
+				if err == booking.ErrorBookingNotFound {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				if err == booking.ErrorBookingExpired {
+					http.Error(w, err.Error(), http.StatusGone)
+					return
+				}
+				if err == booking.ErrorBookingConfirmed {
+					http.Error(w, err.Error(), http.StatusConflict)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Booking confirmed"})
+
+		case http.MethodDelete:
+			// Cancel booking
+			if err := service.CancelBooking(bookingID); err != nil {
+				if err == booking.ErrorBookingNotFound {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Booking cancelled"})
+
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	http.HandleFunc("/admin/release-expired", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		count, err := service.ReleaseExpiredSeats()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]int{"released": count})
 	})
 
 	http.HandleFunc("/bookings/", func(w http.ResponseWriter, r *http.Request) {
