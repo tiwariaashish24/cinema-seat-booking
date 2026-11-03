@@ -3,6 +3,7 @@ package booking
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -56,17 +57,28 @@ func (s *RedisStore) hold(b Booking) (Booking, error) {
 	key := fmt.Sprintf("seat:%s:%s", b.MovieID, b.SeatID)
 
 	b.ID = id
-	val, _ := json.Marshal(b)
+	val, err := json.Marshal(b)
+	if err != nil {
+		return Booking{}, fmt.Errorf("marshal booking: %w", err)
+	}
 
 	res := s.rdb.SetArgs(ctx, key, val, redis.SetArgs{
 		Mode: "NX", // set if not exist
 		TTL:  defaultHoldTTL,
 	})
-	if res.Err() != nil {
+	if errors.Is(res.Err(), redis.Nil) {
 		return Booking{}, ErrorSeatAlreadyBooked
 	}
+	if err := res.Err(); err != nil {
+		return Booking{}, fmt.Errorf("reserve seat: %w", err)
+	}
 
-	s.rdb.Set(ctx, sessionKey(id), key, defaultHoldTTL)
+	if err := s.rdb.Set(ctx, sessionKey(id), key, defaultHoldTTL).Err(); err != nil {
+		if rollbackErr := s.rdb.Del(ctx, key).Err(); rollbackErr != nil {
+			return Booking{}, fmt.Errorf("save booking session: %w (release reserved seat: %v)", err, rollbackErr)
+		}
+		return Booking{}, fmt.Errorf("save booking session: %w", err)
+	}
 
 	return Booking{
 		ID:        id,
