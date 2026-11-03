@@ -3,6 +3,7 @@ package booking
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,76 +14,152 @@ import (
 )
 
 func TestConcurrentBookingExactlyOneWins(t *testing.T) {
+	// Connect to Redis.
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
+		Addr:     "127.0.0.1:6379",
 		PoolSize: 16,
 	})
+
 	t.Cleanup(func() {
 		if err := rdb.Close(); err != nil {
 			t.Errorf("close Redis client: %v", err)
 		}
 	})
-	if err := rdb.Ping(t.Context()).Err(); err != nil {
+
+	ctx := t.Context()
+
+	if err := rdb.Ping(ctx).Err(); err != nil {
 		t.Fatalf("connect to Redis: %v", err)
 	}
 
 	store := NewRedisStore(rdb)
 	svc := NewService(store)
 
-	const numGoroutines = 1_000
+	const (
+		numRequests = 100_000
+		numWorkers  = 256
+	)
+
+	// Generate a unique movie and seat for this test.
 	movieID := uuid.NewString()
-	seatKey := "seat:" + movieID + ":A1"
+	seatID := "A1"
+	seatKey := "seat:" + movieID + ":" + seatID
+
+	// Clean up the test seat using an independent context.
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(
+			context.Background(),
+			5*time.Second,
+		)
 		defer cancel()
-		if err := rdb.Del(ctx, seatKey).Err(); err != nil {
+
+		if err := rdb.Del(cleanupCtx, seatKey).Err(); err != nil {
 			t.Errorf("clean up test seat: %v", err)
 		}
 	})
 
 	var (
-		successes atomic.Int64
-		failures  atomic.Int64
-		wg        sync.WaitGroup
+		successes       atomic.Int64
+		failures        atomic.Int64
+		unexpectedCount atomic.Int64
+		wg              sync.WaitGroup
 	)
+
 	unexpectedErrors := make(chan error, 1)
+	requests := make(chan struct{}, numWorkers)
 
-	wg.Add(numGoroutines)
+	start := time.Now()
 
-	for range numGoroutines {
+	// Start bounded worker pool.
+	wg.Add(numWorkers)
+
+	for range numWorkers {
 		go func() {
 			defer wg.Done()
 
-			err := svc.Book(Booking{
-				MovieID: movieID,
-				SeatID:  "A1",
-				UserID:  uuid.New().String(),
-			})
+			for range requests {
+				err := svc.Book(Booking{
+					MovieID: movieID,
+					SeatID:  seatID,
+					UserID:  uuid.NewString(),
+				})
 
-			if err == nil {
-				successes.Add(1)
-			} else if errors.Is(err, ErrorSeatAlreadyBooked) {
-				failures.Add(1)
-			} else {
-				select {
-				case unexpectedErrors <- err:
+				switch {
+				case err == nil:
+					successes.Add(1)
+
+				case errors.Is(err, ErrorSeatAlreadyBooked):
+					failures.Add(1)
+
 				default:
+					unexpectedCount.Add(1)
+
+					select {
+					case unexpectedErrors <- err:
+					default:
+					}
 				}
 			}
 		}()
 	}
 
+	// Submit all 100,000 requests.
+	for range numRequests {
+		requests <- struct{}{}
+	}
+
+	close(requests)
+
+	// Wait for every worker to finish.
 	wg.Wait()
+
+	elapsed := time.Since(start)
+	totalSuccesses := successes.Load()
+	totalFailures := failures.Load()
+	totalUnexpected := unexpectedCount.Load()
+
+	// Print performance metrics.
+	rps := float64(numRequests) / elapsed.Seconds()
+
+	fmt.Printf("\n========== BOOKING STRESS TEST ==========\n")
+	fmt.Printf("Total Requests       : %d\n", numRequests)
+	fmt.Printf("Workers              : %d\n", numWorkers)
+	fmt.Printf("Successful Bookings  : %d\n", totalSuccesses)
+	fmt.Printf("Booking Conflicts    : %d\n", totalFailures)
+	fmt.Printf("Unexpected Errors    : %d\n", totalUnexpected)
+	fmt.Printf("Execution Time       : %s\n", elapsed)
+	fmt.Printf("Throughput           : %.2f requests/sec\n", rps)
+	fmt.Printf("=========================================\n")
+
+	// Report the first unexpected error.
 	select {
 	case err := <-unexpectedErrors:
 		t.Errorf("unexpected booking error: %v", err)
 	default:
 	}
-	if got := successes.Load(); got != 1 {
-		t.Errorf("expected exactly 1 success, got %d", got)
+
+	// Verify exactly one booking succeeded.
+	if totalSuccesses != 1 {
+		t.Errorf(
+			"expected exactly 1 successful booking, got %d",
+			totalSuccesses,
+		)
 	}
 
-	if got := failures.Load(); got != int64(numGoroutines-1) {
-		t.Errorf("expected %d failures, got %d", numGoroutines-1, got)
+	// Verify all remaining requests were booking conflicts.
+	if totalFailures != numRequests-1 {
+		t.Errorf(
+			"expected %d booking conflicts, got %d",
+			numRequests-1,
+			totalFailures,
+		)
+	}
+
+	// Verify no unexpected errors occurred.
+	if totalUnexpected != 0 {
+		t.Errorf(
+			"expected 0 unexpected errors, got %d",
+			totalUnexpected,
+		)
 	}
 }
