@@ -49,6 +49,14 @@ func (s *RedisStore) ListBookings(movieID string) []Booking {
 	return []Booking{}
 }
 
+func (s *RedisStore) ListMovies() []Movie {
+	return []Movie{
+		{ID: "1", Title: "The Matrix", Description: "A computer hacker learns about the true nature of reality.", Seats: 100},
+		{ID: "2", Title: "Inception", Description: "A thief who steals corporate secrets through dream-sharing technology.", Seats: 120},
+		{ID: "3", Title: "Interstellar", Description: "A team of explorers travel through a wormhole in space.", Seats: 80},
+	}
+}
+
 func (s *RedisStore) hold(b Booking) (Booking, error) {
 	id := uuid.New().String()
 	now := time.Now()

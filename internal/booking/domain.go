@@ -18,7 +18,15 @@ type Booking struct {
 	ExpiresAt time.Time
 }
 
+type Movie struct {
+	ID          string
+	Title       string
+	Description string
+	Seats       int
+}
+
 type BookingStore interface {
 	Book(b Booking) error
 	ListBookings(MovieID string) []Booking
+	ListMovies() []Movie
 }
