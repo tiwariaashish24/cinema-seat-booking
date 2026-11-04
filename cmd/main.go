@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
 	"booking/internal/adapter/redis"
+	"booking/internal/adapter/razorpay"
 	"booking/internal/adapter/tmdb"
 	"booking/internal/booking"
 
@@ -22,6 +24,21 @@ func main() {
 	store := booking.NewRedisStore(rdb)
 	service := booking.NewService(store)
 	tmdbClient := tmdb.NewClient()
+
+	razorpayKey := os.Getenv("RAZORPAY_KEY_ID")
+	razorpaySecret := os.Getenv("RAZORPAY_KEY_SECRET")
+	testModeStr := os.Getenv("RAZORPAY_TEST_MODE")
+	testMode := testModeStr == "true" || testModeStr == "1"
+
+	var paymentClient razorpay.RazorpayClient
+	if razorpayKey == "" || razorpaySecret == "" {
+		log.Println("Razorpay credentials not found, using mock client")
+		paymentClient = razorpay.NewMockClient("test_key", "test_secret", true)
+	} else {
+		paymentClient = razorpay.NewClient(razorpayKey, razorpaySecret, testMode)
+	}
+
+	paymentService := booking.NewPaymentService(service, paymentClient)
 
 	http.HandleFunc("/book", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -249,6 +266,127 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(movies)
+	})
+
+	http.HandleFunc("/payment/create-order", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			BookingID string  `json:"booking_id"`
+			Amount    float64 `json:"amount"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if req.BookingID == "" {
+			http.Error(w, "booking_id is required", http.StatusBadRequest)
+			return
+		}
+
+		if req.Amount <= 0 {
+			http.Error(w, "amount must be greater than 0", http.StatusBadRequest)
+			return
+		}
+
+		order, err := paymentService.CreatePaymentOrder(req.BookingID, req.Amount)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(order)
+	})
+
+	http.HandleFunc("/payment/verify", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			BookingID string `json:"booking_id"`
+			OrderID   string `json:"order_id"`
+			PaymentID string `json:"payment_id"`
+			Signature string `json:"signature"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if req.BookingID == "" || req.OrderID == "" || req.PaymentID == "" || req.Signature == "" {
+			http.Error(w, "booking_id, order_id, payment_id, and signature are required", http.StatusBadRequest)
+			return
+		}
+
+		if err := paymentService.VerifyAndConfirmPayment(req.BookingID, req.OrderID, req.PaymentID, req.Signature); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"message": "Payment verified and booking confirmed"})
+	})
+
+	http.HandleFunc("/payment/webhook", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var webhook struct {
+			Event   string `json:"event"`
+			Payload struct {
+				Payment struct {
+					ID      string            `json:"id"`
+					OrderID string            `json:"order_id"`
+					Status  string            `json:"status"`
+					Amount  float64           `json:"amount"`
+					Notes   map[string]string `json:"notes"`
+				} `json:"payment"`
+			} `json:"payload"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&webhook); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("Received webhook: event=%s, payment_id=%s", webhook.Event, webhook.Payload.Payment.ID)
+
+		if webhook.Event == "payment.captured" {
+			bookingID := webhook.Payload.Payment.Notes["booking_id"]
+
+			if webhook.Payload.Payment.Status == "captured" && bookingID != "" {
+				if err := service.ConfirmBooking(bookingID); err != nil {
+					log.Printf("Failed to confirm booking from webhook: %v", err)
+				} else {
+					log.Printf("Booking %s confirmed via webhook", bookingID)
+				}
+			}
+		}
+
+		w.WriteHeader(http.StatusOK)
+	})
+
+	http.HandleFunc("/payment/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"test_mode": paymentService.IsTestMode(),
+		})
 	})
 
 	log.Println("Server starting on :8082")

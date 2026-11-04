@@ -2,7 +2,7 @@
 
 A backend-focused cinema seat booking system built with **Go (Golang)** and **Redis**. This project explores concurrent seat reservation, temporary booking holds, booking lifecycle management, and distributed locking to prevent multiple users from reserving the same seat.
 
-> **Project status:** Core booking APIs and Redis-backed seat reservation are implemented. Payment gateway integration is planned and is not yet implemented.
+> **Project status:** Core booking APIs and Redis-backed seat reservation are implemented. Razorpay payment gateway integration has been added with test mode support.
 
 ## Table of Contents
 
@@ -35,6 +35,10 @@ A backend-focused cinema seat booking system built with **Go (Golang)** and **Re
 - Search for movies.
 - Provide an in-memory store implementation for development and tests.
 - Include unit, lifecycle, Redis, and concurrency tests.
+- **Razorpay payment gateway integration** with test mode support.
+- **Payment order creation** for held bookings.
+- **Payment verification** with signature validation.
+- **Webhook support** for payment events.
 
 ## Tech Stack
 
@@ -46,6 +50,7 @@ A backend-focused cinema seat booking system built with **Go (Golang)** and **Re
 | Google UUID | Generate unique booking/session IDs                  |
 | godotenv    | Load environment variables from `.env`               |
 | TMDB API    | Movie discovery and search                           |
+| Razorpay    | Payment gateway integration                          |
 | Go testing  | Unit and concurrency testing                         |
 
 ## Architecture
@@ -173,11 +178,16 @@ The current application entry point uses this Redis address.
 
 ### 4. Configure environment variables
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root using `.env.example` as a template:
 
 ```env
 TMDB_API_KEY=your_tmdb_api_key
+RAZORPAY_KEY_ID=your_razorpay_key_id
+RAZORPAY_KEY_SECRET=your_razorpay_key_secret
+RAZORPAY_TEST_MODE=true
 ```
+
+If Razorpay credentials are not provided, the application will use a mock payment client for testing purposes.
 
 Keep your `.env` file out of version control. Never commit API keys or other secrets.
 
@@ -211,6 +221,10 @@ The current server exposes the following endpoints:
 | `GET`    | `/api/movies/trending`                      | Get trending movies from TMDB   |
 | `GET`    | `/api/movies/recommendations?movie_id={id}` | Get recommendations for a movie |
 | `GET`    | `/api/movies/search?query={term}`           | Search movies                   |
+| `POST`   | `/payment/create-order`                     | Create a payment order          |
+| `POST`   | `/payment/verify`                           | Verify payment and confirm booking |
+| `POST`   | `/payment/webhook`                          | Razorpay webhook handler        |
+| `GET`    | `/payment/status`                           | Check payment gateway mode      |
 
 ### Create a booking
 
@@ -282,6 +296,63 @@ GET /api/movies/search?query=inception
 
 TMDB endpoints require a valid API key in the environment.
 
+### Payment endpoints
+
+#### Create payment order
+
+```http
+POST /payment/create-order
+Content-Type: application/json
+```
+
+**Request body**
+
+```json
+{
+  "booking_id": "booking-123",
+  "amount": 500.00
+}
+```
+
+Creates a Razorpay order for a held booking. The amount should be in the smallest currency unit (e.g., paise for INR).
+
+#### Verify payment
+
+```http
+POST /payment/verify
+Content-Type: application/json
+```
+
+**Request body**
+
+```json
+{
+  "booking_id": "booking-123",
+  "order_id": "order_abc123",
+  "payment_id": "pay_xyz789",
+  "signature": "generated_signature"
+}
+```
+
+Verifies the payment signature and confirms the booking if the payment is successful.
+
+#### Payment webhook
+
+```http
+POST /payment/webhook
+Content-Type: application/json
+```
+
+Handles Razorpay webhook events. Currently processes `payment.captured` events to confirm bookings automatically.
+
+#### Payment status
+
+```http
+GET /payment/status
+```
+
+Returns the current payment gateway mode (test or production).
+
 ## Running Tests
 
 Run all tests:
@@ -314,16 +385,17 @@ These results describe local testing conditions. They do not represent a benchma
 
 ## Roadmap
 
-- [ ] Integrate Razorpay in test mode.
-- [ ] Create payment orders from the Go backend.
-- [ ] Verify payment signatures on the server.
-- [ ] Process payment webhooks safely and idempotently.
-- [ ] Confirm bookings only after verified payment.
+- [x] Integrate Razorpay in test mode.
+- [x] Create payment orders from the Go backend.
+- [x] Verify payment signatures on the server.
+- [x] Process payment webhooks safely and idempotently.
+- [x] Confirm bookings only after verified payment.
 - [ ] Add authentication and authorization.
 - [ ] Move Redis connection settings into environment configuration.
 - [ ] Add graceful server shutdown and request timeouts.
 - [ ] Improve expired-hold cleanup and background processing.
 - [ ] Add repeatable load benchmarks and API documentation.
+- [ ] Add webhook signature verification for Razorpay webhooks.
 
 ## Security Notes
 
