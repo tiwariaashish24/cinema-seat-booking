@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, posterUrl, type TmdbMovie } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -11,6 +12,27 @@ import { Skeleton } from "@/components/ui/skeleton";
 type Tab = "showing" | "popular" | "trending" | "upcoming";
 const PAGE_SIZE = 20;
 const MAX_PAGE = 500;
+
+function uniqueMovies(movies: TmdbMovie[]) {
+  const seen = new Set<number>();
+  return movies.filter((movie) => {
+    if (seen.has(movie.id)) return false;
+    seen.add(movie.id);
+    return true;
+  });
+}
+
+function dateInIndia(timestamp: number) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(timestamp);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((value) => value.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "showing", label: "Now Showing" },
@@ -53,8 +75,10 @@ export default function HomePage() {
   const [released, setReleased] = useState<number | null>(null);
   const [newReleases, setNewReleases] = useState<TmdbMovie[]>([]);
   const [newReleasesLoaded, setNewReleasesLoaded] = useState(false);
+  const [today, setToday] = useState<string | null>(null);
 
   useEffect(() => {
+    setToday(dateInIndia(Date.now()));
     const loaders: Record<Tab, (page: number) => Promise<TmdbMovie[]>> = {
       showing: api.nowPlaying,
       popular: api.popular,
@@ -64,7 +88,7 @@ export default function HomePage() {
     (Object.keys(loaders) as Tab[]).forEach((currentTab) => {
       loaders[currentTab](1)
         .then((movies) => {
-          setTmdb((previous) => ({ ...previous, [currentTab]: movies }));
+          setTmdb((previous) => ({ ...previous, [currentTab]: uniqueMovies(movies) }));
           setHasMore((previous) => ({ ...previous, [currentTab]: movies.length === PAGE_SIZE }));
         })
         .catch((error) =>
@@ -75,12 +99,23 @@ export default function HomePage() {
         );
     });
     api.newReleases(1)
-      .then(setNewReleases)
+      .then((movies) => setNewReleases(uniqueMovies(movies)))
       .catch((error) =>
         setErrors((previous) => ({ ...previous, newReleases: String(error) })),
       )
       .finally(() => setNewReleasesLoaded(true));
   }, []);
+
+  const nowShowingMovies = today
+    ? tmdb.showing.filter(
+        (movie) => !!movie.release_date && movie.release_date <= today,
+      )
+    : [];
+  const upcomingMovies = today
+    ? uniqueMovies([...tmdb.showing, ...tmdb.upcoming]).filter(
+        (movie) => !!movie.release_date && movie.release_date > today,
+      )
+    : [];
 
   async function loadMoreMovies() {
     if (loadingMore || pages[tab] >= MAX_PAGE) return;
@@ -95,7 +130,7 @@ export default function HomePage() {
         upcoming: api.upcoming,
       }[tab];
       const movies = await fn(nextPage);
-      setTmdb((p) => ({ ...p, [tab]: [...p[tab], ...movies] }));
+      setTmdb((p) => ({ ...p, [tab]: uniqueMovies([...p[tab], ...movies]) }));
       setPages((p) => ({ ...p, [tab]: nextPage }));
       setHasMore((p) => ({ ...p, [tab]: movies.length === PAGE_SIZE && nextPage < MAX_PAGE }));
       setErrors((p) => {
@@ -118,7 +153,7 @@ export default function HomePage() {
     }
     setSearching(true);
     try {
-      setResults(await api.search(query.trim()));
+      setResults(uniqueMovies(await api.search(query.trim())));
     } catch (err) {
       setErrors((p) => ({ ...p, search: String(err) }));
     } finally {
@@ -193,8 +228,9 @@ export default function HomePage() {
               <section className="space-y-3">
                 <h2 className="text-lg font-semibold">Now Playing in Cinemas</h2>
                 <MovieGrid
-                  movies={tmdb.showing}
-                  loading={!loaded.showing}
+                  movies={nowShowingMovies}
+                  from="showing"
+                  loading={!loaded.showing || !today}
                   error={errors.showing}
                   hasMore={hasMore.showing}
                   loadingMore={loadingMore}
@@ -205,6 +241,7 @@ export default function HomePage() {
                 <h2 className="text-lg font-semibold">New Releases</h2>
                 <MovieGrid
                   movies={newReleases}
+                  from="new-releases"
                   loading={!newReleasesLoaded}
                   error={errors.newReleases}
                   hasMore={false}
@@ -215,8 +252,10 @@ export default function HomePage() {
             </div>
           ) : (
             <MovieGrid
-              movies={tmdb[tab]}
-              loading={!loaded[tab]}
+              movies={tab === "upcoming" ? upcomingMovies : tmdb[tab]}
+              from={tab}
+              comingSoon={tab === "upcoming"}
+              loading={!loaded[tab] || (tab === "upcoming" && !today)}
               error={errors[tab]}
               hasMore={hasMore[tab]}
               loadingMore={loadingMore}
@@ -231,6 +270,8 @@ export default function HomePage() {
 
 function MovieGrid({
   movies,
+  from,
+  comingSoon = false,
   loading,
   error,
   hasMore,
@@ -238,6 +279,8 @@ function MovieGrid({
   onLoadMore,
 }: {
   movies: TmdbMovie[];
+  from: string;
+  comingSoon?: boolean;
   loading: boolean;
   error?: string;
   hasMore: boolean;
@@ -264,7 +307,7 @@ function MovieGrid({
       {movies.length > 0 && (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {movies.map((movie) => (
-            <TmdbCard key={movie.id} movie={movie} />
+            <TmdbCard key={movie.id} movie={movie} from={from} comingSoon={comingSoon} />
           ))}
         </div>
       )}
@@ -279,7 +322,17 @@ function MovieGrid({
   );
 }
 
-function TmdbCard({ movie }: { movie: TmdbMovie }) {
+const DETAILS_ONLY_SOURCES = new Set(["popular", "trending"]);
+
+function TmdbCard({
+  movie,
+  from = "search",
+  comingSoon = false,
+}: {
+  movie: TmdbMovie;
+  from?: string;
+  comingSoon?: boolean;
+}) {
   const img = posterUrl(movie.poster_path);
   const params = new URLSearchParams({
     title: movie.title,
@@ -287,25 +340,36 @@ function TmdbCard({ movie }: { movie: TmdbMovie }) {
     poster: movie.poster_path ?? "",
     release_date: movie.release_date ?? "",
     rating: String(movie.vote_average ?? 0),
+    from,
   });
+  const detailsOnly = DETAILS_ONLY_SOURCES.has(from);
   return (
     <Link href={`/movie/tmdb-${movie.id}?${params.toString()}`}>
       <Card className="h-full overflow-hidden transition-shadow hover:shadow-md">
-        {img ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={img} alt={movie.title} className="aspect-[2/3] w-full object-cover" />
-        ) : (
-          <div className="flex aspect-[2/3] items-center justify-center bg-muted text-3xl font-bold text-muted-foreground">
-            {movie.title.charAt(0)}
-          </div>
-        )}
+        <div className="relative">
+          {img ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={img} alt={movie.title} className="aspect-[2/3] w-full object-cover" />
+          ) : (
+            <div className="flex aspect-[2/3] items-center justify-center bg-muted text-3xl font-bold text-muted-foreground">
+              {movie.title.charAt(0)}
+            </div>
+          )}
+          {comingSoon && (
+            <Badge className="absolute left-2 top-2" variant="secondary">
+              Coming Soon
+            </Badge>
+          )}
+        </div>
         <CardContent className="space-y-1 pt-3">
           <h3 className="line-clamp-1 text-sm font-semibold">{movie.title}</h3>
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>{movie.release_date?.slice(0, 4) || "—"}</span>
             <span>★ {movie.vote_average?.toFixed(1)}</span>
           </div>
-          <p className="pt-1 text-xs font-medium text-primary">View details &amp; cinemas</p>
+          <p className="pt-1 text-xs font-medium text-primary">
+            {detailsOnly ? "View details" : "View details & cinemas"}
+          </p>
         </CardContent>
       </Card>
     </Link>

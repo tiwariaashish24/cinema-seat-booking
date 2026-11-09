@@ -105,3 +105,33 @@ func TestNearbyRejectsMissingOrInvalidLocation(t *testing.T) {
 		})
 	}
 }
+
+func TestNearbyFallsBackAfterTransientGatewayError(t *testing.T) {
+	var primaryRequests atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		primaryRequests.Add(1)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer primary.Close()
+
+	var fallbackRequests atomic.Int32
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackRequests.Add(1)
+		fmt.Fprint(w, `{"elements":[{"type":"node","id":9,"lat":28.614,"lon":77.210,"tags":{"name":"Mapped Cinema"}}]}`)
+	}))
+	defer fallback.Close()
+
+	client := NewClient()
+	client.overpass = primary.URL
+	client.fallbacks = []string{fallback.URL}
+	result, err := client.Nearby(context.Background(), "", &cinema.Coordinates{Latitude: 28.613, Longitude: 77.209})
+	if err != nil {
+		t.Fatalf("Nearby() error = %v", err)
+	}
+	if primaryRequests.Load() != 2 || fallbackRequests.Load() != 1 {
+		t.Fatalf("primary requests = %d, fallback requests = %d; want 2 and 1", primaryRequests.Load(), fallbackRequests.Load())
+	}
+	if len(result.Cinemas) != 1 || result.Cinemas[0].Name != "Mapped Cinema" {
+		t.Fatalf("Nearby() result = %#v, want the fallback map result", result)
+	}
+}

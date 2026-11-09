@@ -16,15 +16,17 @@ import (
 )
 
 const (
-	nominatimURL = "https://nominatim.openstreetmap.org/search"
-	overpassURL  = "https://overpass-api.de/api/interpreter"
-	cacheTTL     = time.Hour
+	nominatimURL      = "https://nominatim.openstreetmap.org/search"
+	overpassURL       = "https://overpass-api.de/api/interpreter"
+	cacheTTL          = time.Hour
+	maxPrimaryRetries = 1
 )
 
 type Client struct {
 	httpClient *http.Client
 	geocoder   string
 	overpass   string
+	fallbacks  []string
 
 	mu            sync.Mutex
 	geocodeMu     sync.Mutex
@@ -63,10 +65,14 @@ type overpassCenter struct {
 
 func NewClient() *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: 25 * time.Second},
+		httpClient: &http.Client{Timeout: 5 * time.Second},
 		geocoder:   nominatimURL,
 		overpass:   overpassURL,
-		cache:      make(map[string]cachedResult),
+		fallbacks: []string{
+			"https://overpass.kumi.systems/api/interpreter",
+			"https://overpass.private.coffee/api/interpreter",
+		},
+		cache: make(map[string]cachedResult),
 	}
 }
 
@@ -131,6 +137,20 @@ func (c *Client) cached(key string) (cinema.NearbyCinemaResult, bool) {
 func (c *Client) storeCache(key string, result cinema.NearbyCinemaResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if len(c.cache) >= 256 {
+		now := time.Now()
+		for cachedKey, entry := range c.cache {
+			if now.After(entry.expiresAt) {
+				delete(c.cache, cachedKey)
+			}
+		}
+		if len(c.cache) >= 256 {
+			for cachedKey := range c.cache {
+				delete(c.cache, cachedKey)
+				break
+			}
+		}
+	}
 	c.cache[key] = cachedResult{result: result, expiresAt: time.Now().Add(cacheTTL)}
 }
 
@@ -191,33 +211,86 @@ func (c *Client) geocode(ctx context.Context, location string) (cinema.Coordinat
 }
 
 func (c *Client) findCinemas(ctx context.Context, origin cinema.Coordinates) ([]cinema.NearbyCinema, error) {
-	query := fmt.Sprintf(`[out:json][timeout:20];(node["amenity"="cinema"](around:25000,%.6f,%.6f);way["amenity"="cinema"](around:25000,%.6f,%.6f);relation["amenity"="cinema"](around:25000,%.6f,%.6f););out center tags;`,
+	query := fmt.Sprintf(`[out:json][timeout:10];(node["amenity"="cinema"](around:25000,%.6f,%.6f);way["amenity"="cinema"](around:25000,%.6f,%.6f);relation["amenity"="cinema"](around:25000,%.6f,%.6f););out center tags;`,
 		origin.Latitude, origin.Longitude,
 		origin.Latitude, origin.Longitude,
 		origin.Latitude, origin.Longitude,
 	)
+	endpoints := []string{c.overpass}
+	if len(c.fallbacks) > 0 {
+		endpoints = append(endpoints, c.fallbacks...)
+	}
+	var lastErr error
+	var data overpassResponse
+	for endpointIndex, endpoint := range endpoints {
+		retries := 0
+		if endpointIndex == 0 {
+			retries = maxPrimaryRetries
+		}
+		for retry := 0; retry <= retries; retry++ {
+			data, lastErr = c.requestCinemas(ctx, endpoint, query)
+			if lastErr == nil {
+				return c.mapCinemas(data, origin), nil
+			}
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("nearby cinema search timed out; please try again or search another area")
+			}
+			if retry < retries && retryableEndpointError(lastErr) {
+				timer := time.NewTimer(250 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, fmt.Errorf("nearby cinema search timed out; please try again or search another area")
+				case <-timer.C:
+				}
+				continue
+			}
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("nearby cinema search timed out; please try again or search another area")
+		}
+	}
+	return nil, fmt.Errorf("nearby cinema data is temporarily unavailable; please try again in a few moments (%w)", lastErr)
+}
+
+func (c *Client) requestCinemas(ctx context.Context, endpoint, query string) (overpassResponse, error) {
 	form := url.Values{"data": {query}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.overpass, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("create cinema lookup request: %w", err)
+		return overpassResponse{}, fmt.Errorf("create cinema lookup request: %w", err)
 	}
 	req.Header.Set("User-Agent", "CinemaSeatBooking/1.0 (OpenStreetMap cinema lookup)")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("nearby cinema lookup failed: %w", err)
+		return overpassResponse{}, fmt.Errorf("nearby cinema lookup request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("nearby cinema lookup returned status %d; please retry later", resp.StatusCode)
+		return overpassResponse{}, fmt.Errorf("nearby cinema lookup returned status %d", resp.StatusCode)
 	}
-
 	var data overpassResponse
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("decode nearby cinema results: %w", err)
+		return overpassResponse{}, fmt.Errorf("decode nearby cinema results: %w", err)
 	}
+	return data, nil
+}
+
+func retryableEndpointError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "request failed") ||
+		strings.Contains(message, "decode nearby cinema results") ||
+		strings.Contains(message, "returned status 429") ||
+		strings.Contains(message, "returned status 502") ||
+		strings.Contains(message, "returned status 503") ||
+		strings.Contains(message, "returned status 504")
+}
+
+func (c *Client) mapCinemas(data overpassResponse, origin cinema.Coordinates) []cinema.NearbyCinema {
 	cinemas := make([]cinema.NearbyCinema, 0, len(data.Elements))
 	for _, element := range data.Elements {
 		name := strings.TrimSpace(element.Tags["name"])
@@ -256,7 +329,7 @@ func (c *Client) findCinemas(ctx context.Context, origin cinema.Coordinates) ([]
 	if len(cinemas) > 20 {
 		cinemas = cinemas[:20]
 	}
-	return cinemas, nil
+	return cinemas
 }
 
 func validCoordinates(coordinates cinema.Coordinates) bool {

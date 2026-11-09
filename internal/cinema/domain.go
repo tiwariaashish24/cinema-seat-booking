@@ -68,6 +68,7 @@ type DemoReservation struct {
 	Cinema     string    `json:"cinema"`
 	Screen     string    `json:"screen"`
 	Seat       string    `json:"seat"`
+	PricePaise int       `json:"price_paise"`
 	Customer   string    `json:"customer"`
 	Status     string    `json:"status"`
 	StartsAt   time.Time `json:"starts_at"`

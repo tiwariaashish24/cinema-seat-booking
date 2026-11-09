@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import QRCode from "qrcode";
 import { api, type DemoReservation } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,12 +15,41 @@ export function DemoBookingView() {
   const [reservation, setReservation] = useState<DemoReservation | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [qrError, setQrError] = useState("");
 
   useEffect(() => {
     api.getDemoBooking(id)
       .then(setReservation)
       .catch((requestError) => setError(String(requestError)));
   }, [id]);
+
+  useEffect(() => {
+    if (!reservation) return;
+    let active = true;
+    const payload = JSON.stringify({
+      type: "seatbook-demo-booking",
+      booking_id: reservation.id,
+      movie: reservation.movie_title,
+      cinema: reservation.cinema,
+      screen: reservation.screen,
+      showtime: reservation.starts_at,
+      seat: reservation.seat,
+      demo_only: true,
+    });
+    QRCode.toDataURL(payload, { errorCorrectionLevel: "M", margin: 2, width: 240 })
+      .then((dataUrl) => {
+        if (active) setQrDataUrl(dataUrl);
+      })
+      .catch((qrGenerationError: unknown) => {
+        if (active) {
+          setQrError(qrGenerationError instanceof Error ? qrGenerationError.message : String(qrGenerationError));
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [reservation]);
 
   async function cancelReservation() {
     setBusy(true);
@@ -70,10 +100,30 @@ export function DemoBookingView() {
             timeStyle: "short",
           })}</dd>
           <dt className="text-muted-foreground">Seat</dt><dd>{reservation.seat}</dd>
+          <dt className="text-muted-foreground">Demo total</dt>
+          <dd>{new Intl.NumberFormat("en-IN", {
+            style: "currency",
+            currency: "INR",
+            maximumFractionDigits: 0,
+          }).format(reservation.price_paise / 100)}</dd>
           <dt className="text-muted-foreground">Customer</dt><dd>{reservation.customer}</dd>
           <dt className="text-muted-foreground">Status</dt><dd>{reservation.status}</dd>
           <dt className="text-muted-foreground">Booking ID</dt><dd className="break-all font-mono text-xs">{reservation.id}</dd>
         </dl>
+        <div className="flex flex-col items-center gap-2 rounded-lg border p-4 text-center">
+          <p className="text-sm font-medium">Demo booking QR</p>
+          {qrDataUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={qrDataUrl} alt={`QR code for demo reservation ${reservation.id}`} width={240} height={240} />
+          ) : qrError ? (
+            <p role="alert" className="text-sm text-destructive">{qrError}</p>
+          ) : (
+            <p className="text-sm text-muted-foreground">Generating booking QR…</p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            This QR identifies a local demo reservation only; it is not a real cinema ticket.
+          </p>
+        </div>
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         <div className="flex flex-col gap-2 sm:flex-row">
           {reservation.status === "confirmed" && (

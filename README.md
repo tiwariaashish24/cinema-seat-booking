@@ -307,7 +307,7 @@ TMDB endpoints require a TMDB API Read Access Token in `TMDB_TOKEN`. The movie l
 
 ### Cinemas and demo bookings
 
-- `GET /api/cinemas/nearby?location=Delhi%20NCR` finds real mapped cinema locations in India using OpenStreetMap Nominatim and Overpass. You can also pass `lat` and `lon` after granting browser location permission. Map results may be incomplete; OpenStreetMap does not provide showtimes, ticket inventory, or seat availability.
+- `GET /api/cinemas/nearby?location=Delhi%20NCR` finds real mapped cinema locations in India using OpenStreetMap Nominatim and Overpass. Overpass searches retry and fall back to alternate public instances; successful location results are cached for one hour. You can also pass `lat` and `lon` after granting browser location permission. Map results may be incomplete; OpenStreetMap does not provide showtimes, ticket inventory, or seat availability.
 - `GET /api/demo/showtimes` and `GET /api/demo/showtimes/{showtimeID}/seats` return sample data from local PostgreSQL.
 - `POST /api/demo/bookings/` reserves a sample seat transactionally in PostgreSQL. `GET /api/demo/bookings?customer={name}` lists that browser user's demo bookings; `GET` and `DELETE /api/demo/bookings/{bookingID}` retrieve or cancel a reservation.
 

@@ -75,6 +75,7 @@ export interface DemoReservation {
   cinema: string;
   screen: string;
   seat: string;
+  price_paise: number;
   customer: string;
   status: "confirmed" | "cancelled";
   starts_at: string;

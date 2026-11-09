@@ -97,17 +97,19 @@ CREATE INDEX IF NOT EXISTS demo_bookings_customer_created_idx
     ON demo_bookings (customer, created_at DESC);
 
 INSERT INTO demo_cinemas (id, name, address) VALUES
-    ('10000000-0000-4000-8000-000000000001', 'SeatBook Demo Cinema', 'DEMO DATA ONLY — Connaught Place, New Delhi; not a real theatre')
-ON CONFLICT (id) DO NOTHING;
+    ('10000000-0000-4000-8000-000000000001', 'SeatBook Sample Cinema — Connaught Place', 'Sample location: Connaught Place, New Delhi (not a real theatre)'),
+    ('10000000-0000-4000-8000-000000000002', 'SeatBook Sample Cinema — Gurugram', 'Sample location: Sector 29, Gurugram (not a real theatre)')
+ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, address = EXCLUDED.address;
 
 INSERT INTO demo_screens (id, cinema_id, name) VALUES
-    ('20000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'Sample Screen 1')
+    ('20000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'Sample Screen 1'),
+    ('20000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000002', 'Sample Screen 2')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO demo_showtimes (id, screen_id, starts_at, language, format, price_paise) VALUES
     ('30000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000001', ((CURRENT_DATE + 1) + TIME '18:30') AT TIME ZONE 'Asia/Kolkata', 'Hindi', '2D', 25000),
-    ('30000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000001', ((CURRENT_DATE + 1) + TIME '21:30') AT TIME ZONE 'Asia/Kolkata', 'English', '2D', 30000)
-ON CONFLICT (id) DO NOTHING;
+    ('30000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000002', ((CURRENT_DATE + 1) + TIME '21:30') AT TIME ZONE 'Asia/Kolkata', 'English', '2D', 30000)
+ON CONFLICT (id) DO UPDATE SET screen_id = EXCLUDED.screen_id;
 
 INSERT INTO demo_seats (id, showtime_id, seat_number, status, price_paise)
 SELECT
@@ -201,7 +203,7 @@ func (s *Store) BookSeat(ctx context.Context, showtimeID, seatID, movieID, movie
 	defer tx.Rollback()
 
 	const seatQuery = `
-SELECT seat.status, seat.seat_number, c.name, sc.name, st.starts_at
+SELECT seat.status, seat.seat_number, seat.price_paise, c.name, sc.name, st.starts_at
 FROM demo_seats seat
 JOIN demo_showtimes st ON st.id = seat.showtime_id
 JOIN demo_screens sc ON sc.id = st.screen_id
@@ -209,9 +211,10 @@ JOIN demo_cinemas c ON c.id = sc.cinema_id
 WHERE st.id = $1 AND seat.id = $2 AND st.starts_at > NOW()
 FOR UPDATE OF seat`
 	var status, seatNumber string
+	var seatPrice int
 	var reservation cinema.DemoReservation
 	if err := tx.QueryRowContext(ctx, seatQuery, showtimeID, seatID).
-		Scan(&status, &seatNumber, &reservation.Cinema, &reservation.Screen, &reservation.StartsAt); err != nil {
+		Scan(&status, &seatNumber, &seatPrice, &reservation.Cinema, &reservation.Screen, &reservation.StartsAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return cinema.DemoReservation{}, ErrSeatNotFound
 		}
@@ -240,6 +243,7 @@ RETURNING id, created_at`
 	reservation.MovieID = movieID
 	reservation.MovieTitle = movieTitle
 	reservation.Seat = seatNumber
+	reservation.PricePaise = seatPrice
 	reservation.Customer = customer
 	reservation.Status = "confirmed"
 	reservation.IsDemo = true
@@ -251,7 +255,7 @@ func (s *Store) GetBooking(ctx context.Context, id string) (cinema.DemoReservati
 		return cinema.DemoReservation{}, ErrBookingNotFound
 	}
 	const query = `
-SELECT b.id, b.showtime_id, b.movie_id, b.movie_title, c.name, sc.name, seat.seat_number,
+SELECT b.id, b.showtime_id, b.movie_id, b.movie_title, c.name, sc.name, seat.seat_number, seat.price_paise,
        b.customer, b.status, st.starts_at, b.created_at, st.is_demo
 FROM demo_bookings b
 JOIN demo_showtimes st ON st.id = b.showtime_id
@@ -262,7 +266,7 @@ WHERE b.id = $1`
 	var reservation cinema.DemoReservation
 	err := s.db.QueryRowContext(ctx, query, id).Scan(
 		&reservation.ID, &reservation.ShowtimeID, &reservation.MovieID, &reservation.MovieTitle,
-		&reservation.Cinema, &reservation.Screen, &reservation.Seat, &reservation.Customer,
+		&reservation.Cinema, &reservation.Screen, &reservation.Seat, &reservation.PricePaise, &reservation.Customer,
 		&reservation.Status, &reservation.StartsAt, &reservation.CreatedAt, &reservation.IsDemo,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -276,7 +280,7 @@ WHERE b.id = $1`
 
 func (s *Store) ListBookings(ctx context.Context, customer string) ([]cinema.DemoReservation, error) {
 	const query = `
-SELECT b.id, b.showtime_id, b.movie_id, b.movie_title, c.name, sc.name, seat.seat_number,
+SELECT b.id, b.showtime_id, b.movie_id, b.movie_title, c.name, sc.name, seat.seat_number, seat.price_paise,
        b.customer, b.status, st.starts_at, b.created_at, st.is_demo
 FROM demo_bookings b
 JOIN demo_showtimes st ON st.id = b.showtime_id
@@ -296,7 +300,7 @@ ORDER BY b.created_at DESC`
 		var reservation cinema.DemoReservation
 		if err := rows.Scan(
 			&reservation.ID, &reservation.ShowtimeID, &reservation.MovieID, &reservation.MovieTitle,
-			&reservation.Cinema, &reservation.Screen, &reservation.Seat, &reservation.Customer,
+			&reservation.Cinema, &reservation.Screen, &reservation.Seat, &reservation.PricePaise, &reservation.Customer,
 			&reservation.Status, &reservation.StartsAt, &reservation.CreatedAt, &reservation.IsDemo,
 		); err != nil {
 			return nil, fmt.Errorf("scan demo booking: %w", err)
