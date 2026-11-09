@@ -75,9 +75,9 @@ export const api = {
     req<{ message: string }>(`/booking/${id}`, { method: "DELETE" }),
   releaseExpired: () => post<{ released: number }>("/admin/release-expired", {}),
 
-  upcoming: () => req<TmdbMovie[]>("/api/movies/upcoming"),
-  popular: () => req<TmdbMovie[]>("/api/movies/popular"),
-  trending: () => req<TmdbMovie[]>("/api/movies/trending"),
+  upcoming: (page = 1) => req<TmdbMovie[]>(`/api/movies/upcoming?page=${page}`),
+  popular: (page = 1) => req<TmdbMovie[]>(`/api/movies/popular?page=${page}`),
+  trending: (page = 1) => req<TmdbMovie[]>(`/api/movies/trending?page=${page}`),
   search: (query: string) =>
     req<TmdbMovie[]>(`/api/movies/search?query=${encodeURIComponent(query)}`),
 

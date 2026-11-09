@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { api, type Booking } from "@/lib/api";
+import { useNow } from "@/lib/use-now";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,7 +44,7 @@ export function BookingView() {
 
   const [booking, setBooking] = useState<Booking | null>(null);
   const [error, setError] = useState("");
-  const [now, setNow] = useState(Date.now());
+  const now = useNow();
   const [payOpen, setPayOpen] = useState(false);
   const [amount, setAmount] = useState("500");
   const [busy, setBusy] = useState(false);
@@ -61,12 +62,8 @@ export function BookingView() {
   useEffect(() => {
     refresh();
     const t = setInterval(refresh, 5000);
-    const tick = setInterval(() => setNow(Date.now()), 1000);
     api.paymentStatus().then((s) => setTestMode(s.test_mode)).catch(() => setTestMode(null));
-    return () => {
-      clearInterval(t);
-      clearInterval(tick);
-    };
+    return () => clearInterval(t);
   }, [refresh]);
 
   if (error) {

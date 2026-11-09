@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, type Booking } from "@/lib/api";
+import { useNow } from "@/lib/use-now";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,6 +11,7 @@ import { Card, CardContent } from "@/components/ui/card";
 export default function MyBookingsPage() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const now = useNow();
 
   useEffect(() => {
     const ids = JSON.parse(localStorage.getItem("cinema_bookings") ?? "[]") as string[];
@@ -37,7 +39,7 @@ export default function MyBookingsPage() {
       ) : (
         bookings.map((b) => {
           const expired =
-            b.status === "held" && new Date(b.expires_at).getTime() <= Date.now();
+            b.status === "held" && new Date(b.expires_at).getTime() <= now;
           return (
             <Card key={b.id}>
               <CardContent className="flex items-center justify-between pt-4">

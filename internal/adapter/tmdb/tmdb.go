@@ -3,9 +3,12 @@ package tmdb
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
+	"time"
 )
 
 type Movie struct {
@@ -22,9 +25,11 @@ type MovieResponse struct {
 }
 
 type Client struct {
-	apiKey string
+	apiKey  string
 	baseURL string
 }
+
+const maxAttempts = 3
 
 func NewClient() *Client {
 	return &Client{
@@ -34,45 +39,72 @@ func NewClient() *Client {
 }
 
 func (c *Client) makeRequest(endpoint string) ([]Movie, error) {
-	url := fmt.Sprintf("%s%s", c.baseURL, endpoint)
+	requestURL := fmt.Sprintf("%s%s", c.baseURL, endpoint)
+	client := &http.Client{Timeout: 10 * time.Second}
+	var lastErr error
 
-	req, err := http.NewRequest("GET", url, nil)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("API request failed: %w", err)
+		} else if resp.StatusCode != http.StatusOK {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			if readErr != nil {
+				lastErr = fmt.Errorf("read API error response: %w", readErr)
+			} else {
+				lastErr = fmt.Errorf("API returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+			if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < http.StatusInternalServerError {
+				return nil, lastErr
+			}
+		} else {
+			var movies MovieResponse
+			decodeErr := json.NewDecoder(resp.Body).Decode(&movies)
+			resp.Body.Close()
+			if decodeErr != nil {
+				return nil, fmt.Errorf("JSON decoding failed: %w", decodeErr)
+			}
+			return movies.Results, nil
+		}
+
+		if attempt < maxAttempts-1 {
+			time.Sleep(time.Duration(attempt+1) * 150 * time.Millisecond)
+		}
+	}
+
+	return nil, lastErr
+}
+
+func (c *Client) makePagedRequest(endpoint string, page int) ([]Movie, error) {
+	requestURL, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, fmt.Errorf("parse request URL: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
-	}
-
-	var movies MovieResponse
-	if err := json.NewDecoder(resp.Body).Decode(&movies); err != nil {
-		return nil, fmt.Errorf("JSON decoding failed: %w", err)
-	}
-
-	return movies.Results, nil
+	query := requestURL.Query()
+	query.Set("page", fmt.Sprintf("%d", page))
+	requestURL.RawQuery = query.Encode()
+	return c.makeRequest(requestURL.String())
 }
 
-func (c *Client) GetUpcomingMovies() ([]Movie, error) {
-	return c.makeRequest("/movie/upcoming")
+func (c *Client) GetUpcomingMovies(page int) ([]Movie, error) {
+	return c.makePagedRequest("/movie/upcoming", page)
 }
 
-func (c *Client) GetPopularMovies() ([]Movie, error) {
-	return c.makeRequest("/movie/popular")
+func (c *Client) GetPopularMovies(page int) ([]Movie, error) {
+	return c.makePagedRequest("/movie/popular", page)
 }
 
-func (c *Client) GetTrendingMovies() ([]Movie, error) {
-	return c.makeRequest("/trending/movie/week")
+func (c *Client) GetTrendingMovies(page int) ([]Movie, error) {
+	return c.makePagedRequest("/trending/movie/week", page)
 }
 
 func (c *Client) GetRecommendations(movieID int) ([]Movie, error) {

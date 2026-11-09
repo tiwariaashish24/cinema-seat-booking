@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { api, posterUrl, type Booking, type SampleMovie } from "@/lib/api";
+import { useNow } from "@/lib/use-now";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,9 +31,9 @@ function buildSeats(total: number) {
   return seats;
 }
 
-function isSeatTaken(b: Booking) {
+function isSeatTaken(b: Booking, now: number) {
   if (b.status === "confirmed") return true;
-  if (b.status === "held") return new Date(b.expires_at).getTime() > Date.now();
+  if (b.status === "held") return new Date(b.expires_at).getTime() > now;
   return false;
 }
 
@@ -42,58 +43,62 @@ export function MovieDetail() {
   const router = useRouter();
   const id = params.id;
   const isTmdb = id.startsWith("tmdb-");
-  const movieId = isTmdb ? id : id;
+  const movieId = id;
 
-  const [title, setTitle] = useState(isTmdb ? "" : "Loading…");
-  const [description, setDescription] = useState("");
-  const [poster, setPoster] = useState<string | null>(null);
-  const [totalSeats, setTotalSeats] = useState(DEFAULT_TMDB_SEATS);
+  const [sample, setSample] = useState<SampleMovie | null>(null);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [userId, setUserId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const now = useNow();
 
   useEffect(() => {
-    setUserId(localStorage.getItem("cinema_user_id") ?? "");
+    const t = setTimeout(
+      () => setUserId(localStorage.getItem("cinema_user_id") ?? ""),
+      0,
+    );
+    return () => clearTimeout(t);
   }, []);
 
   useEffect(() => {
-    if (isTmdb) {
-      setTitle(searchParams.get("title") ?? "Movie");
-      setPoster(posterUrl(searchParams.get("poster")));
-      setDescription("");
-      setTotalSeats(DEFAULT_TMDB_SEATS);
-    } else {
-      api
-        .listMovies()
-        .then((ms: SampleMovie[]) => {
-          const m = ms.find((x) => (x.ID ?? x.id) === id);
-          if (m) {
-            setTitle(m.Title ?? m.title ?? "Movie");
-            setDescription(m.Description ?? m.description ?? "");
-            setTotalSeats(m.Seats ?? m.seats ?? 100);
-          } else {
-            setTitle("Movie");
-          }
-        })
-        .catch(() => setTitle("Movie"));
-    }
+    if (isTmdb) return;
+    api
+      .listMovies()
+      .then((ms) =>
+        setSample(ms.find((x) => (x.ID ?? x.id) === id) ?? null),
+      )
+      .catch(() => setSample(null));
+  }, [id, isTmdb]);
+
+  useEffect(() => {
     api
       .listBookings(movieId)
       .then(setBookings)
       .catch(() => setBookings([]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [movieId]);
+
+  const title = isTmdb
+    ? (searchParams.get("title") ?? "Movie")
+    : sample
+      ? ((sample.Title ?? sample.title) || "Movie")
+      : "Loading…";
+  const description = isTmdb
+    ? ""
+    : ((sample?.Description ?? sample?.description) || "");
+  const poster = isTmdb ? posterUrl(searchParams.get("poster")) : null;
+  const totalSeats = isTmdb
+    ? DEFAULT_TMDB_SEATS
+    : (sample?.Seats ?? sample?.seats ?? 100);
 
   const seats = useMemo(() => buildSeats(totalSeats), [totalSeats]);
   const taken = useMemo(() => {
     const s = new Set<string>();
     bookings.forEach((b) => {
-      if (isSeatTaken(b)) s.add(b.seat_id);
+      if (isSeatTaken(b, now)) s.add(b.seat_id);
     });
     return s;
-  }, [bookings]);
+  }, [bookings, now]);
 
   async function book() {
     if (!selected || !userId.trim()) return;

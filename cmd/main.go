@@ -6,9 +6,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
-	"booking/internal/adapter/redis"
 	"booking/internal/adapter/razorpay"
+	"booking/internal/adapter/redis"
 	"booking/internal/adapter/tmdb"
 	"booking/internal/booking"
 
@@ -20,8 +21,14 @@ func main() {
 		log.Println("Warning: .env file not found")
 	}
 
-	rdb := redis.NewClient("localhost:6379")
-	store := booking.NewRedisStore(rdb)
+	var store booking.BookingStore
+	if os.Getenv("USE_MEMORY_STORE") == "true" || os.Getenv("USE_MEMORY_STORE") == "1" {
+		log.Println("Using in-memory booking store (no Redis)")
+		store = booking.NewMemoryStore()
+	} else {
+		rdb := redis.NewClient("localhost:6379")
+		store = booking.NewRedisStore(rdb)
+	}
 	service := booking.NewService(store)
 	tmdbClient := tmdb.NewClient()
 
@@ -178,7 +185,13 @@ func main() {
 			return
 		}
 
-		movies, err := tmdbClient.GetUpcomingMovies()
+		page, err := parseMoviePage(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		movies, err := tmdbClient.GetUpcomingMovies(page)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -194,7 +207,13 @@ func main() {
 			return
 		}
 
-		movies, err := tmdbClient.GetPopularMovies()
+		page, err := parseMoviePage(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		movies, err := tmdbClient.GetPopularMovies(page)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -210,7 +229,13 @@ func main() {
 			return
 		}
 
-		movies, err := tmdbClient.GetTrendingMovies()
+		page, err := parseMoviePage(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		movies, err := tmdbClient.GetTrendingMovies(page)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -423,6 +448,32 @@ func main() {
 		})
 	})
 
+	cors := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+
 	log.Println("Server starting on :8082")
-	log.Fatal(http.ListenAndServe(":8082", nil))
+	log.Fatal(http.ListenAndServe(":8082", cors(http.DefaultServeMux)))
+}
+
+func parseMoviePage(r *http.Request) (int, error) {
+	rawPage := r.URL.Query().Get("page")
+	if rawPage == "" {
+		return 1, nil
+	}
+
+	page, err := strconv.Atoi(rawPage)
+	if err != nil || page < 1 || page > 500 {
+		return 0, fmt.Errorf("page must be an integer between 1 and 500")
+	}
+	return page, nil
 }

@@ -2,6 +2,8 @@ package booking
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type MemoryStore struct {
@@ -15,12 +17,15 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) Book(b Booking) (Booking, error) {
-	if _, exist := s.bookings[b.SeatID]; exist {
-		return Booking{}, ErrorSeatAlreadyBooked
+	for _, existing := range s.bookings {
+		if existing.MovieID == b.MovieID && existing.SeatID == b.SeatID {
+			return Booking{}, ErrorSeatAlreadyBooked
+		}
 	}
+	b.ID = uuid.New().String()
 	b.Status = "held"
 	b.ExpiresAt = time.Now().Add(2 * time.Minute)
-	s.bookings[b.SeatID] = b
+	s.bookings[b.ID] = b
 	return b, nil
 }
 
@@ -43,18 +48,16 @@ func (s *MemoryStore) ListMovies() []Movie {
 }
 
 func (s *MemoryStore) GetBooking(bookingID string) (Booking, error) {
-	for _, b := range s.bookings {
-		if b.ID == bookingID {
-			return b, nil
-		}
+	if b, ok := s.bookings[bookingID]; ok {
+		return b, nil
 	}
 	return Booking{}, ErrorBookingNotFound
 }
 
 func (s *MemoryStore) ConfirmBooking(bookingID string) error {
-	b, err := s.GetBooking(bookingID)
-	if err != nil {
-		return err
+	b, ok := s.bookings[bookingID]
+	if !ok {
+		return ErrorBookingNotFound
 	}
 
 	if b.Status == "confirmed" {
@@ -67,17 +70,15 @@ func (s *MemoryStore) ConfirmBooking(bookingID string) error {
 
 	b.Status = "confirmed"
 	b.ExpiresAt = time.Time{}
-	s.bookings[b.SeatID] = b
+	s.bookings[bookingID] = b
 	return nil
 }
 
 func (s *MemoryStore) CancelBooking(bookingID string) error {
-	b, err := s.GetBooking(bookingID)
-	if err != nil {
-		return err
+	if _, ok := s.bookings[bookingID]; !ok {
+		return ErrorBookingNotFound
 	}
-
-	delete(s.bookings, b.SeatID)
+	delete(s.bookings, bookingID)
 	return nil
 }
 
@@ -85,9 +86,9 @@ func (s *MemoryStore) ReleaseExpiredSeats() (int, error) {
 	releasedCount := 0
 	now := time.Now()
 
-	for seatID, b := range s.bookings {
+	for id, b := range s.bookings {
 		if b.Status == "held" && now.After(b.ExpiresAt) {
-			delete(s.bookings, seatID)
+			delete(s.bookings, id)
 			releasedCount++
 		}
 	}

@@ -181,7 +181,7 @@ The current application entry point uses this Redis address.
 Create a `.env` file in the project root using `.env.example` as a template:
 
 ```env
-TMDB_API_KEY=your_tmdb_api_key
+TMDB_TOKEN=your_tmdb_read_access_token
 RAZORPAY_KEY_ID=your_razorpay_key_id
 RAZORPAY_KEY_SECRET=your_razorpay_key_secret
 RAZORPAY_TEST_MODE=true
@@ -216,9 +216,9 @@ The current server exposes the following endpoints:
 | `POST`   | `/admin/release-expired`                    | Release expired seat holds      |
 | `GET`    | `/bookings/{movieID}`                       | List bookings for a movie       |
 | `GET`    | `/movies`                                   | List the sample movies          |
-| `GET`    | `/api/movies/upcoming`                      | Get upcoming movies from TMDB   |
-| `GET`    | `/api/movies/popular`                       | Get popular movies from TMDB    |
-| `GET`    | `/api/movies/trending`                      | Get trending movies from TMDB   |
+| `GET`    | `/api/movies/upcoming?page={page}`           | Get upcoming movies from TMDB   |
+| `GET`    | `/api/movies/popular?page={page}`            | Get popular movies from TMDB    |
+| `GET`    | `/api/movies/trending?page={page}`           | Get trending movies from TMDB   |
 | `GET`    | `/api/movies/recommendations?movie_id={id}` | Get recommendations for a movie |
 | `GET`    | `/api/movies/search?query={term}`           | Search movies                   |
 | `POST`   | `/payment/create-order`                     | Create a payment order          |
@@ -294,7 +294,7 @@ GET /api/movies/recommendations?movie_id=1
 GET /api/movies/search?query=inception
 ```
 
-TMDB endpoints require a valid API key in the environment.
+TMDB endpoints require a TMDB API Read Access Token in `TMDB_TOKEN`. The movie lists return 20 results per page; `page` defaults to 1.
 
 ### Payment endpoints
 
