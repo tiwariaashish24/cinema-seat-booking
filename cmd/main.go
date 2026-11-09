@@ -1,17 +1,23 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 
+	"booking/internal/adapter/openstreetmap"
+	"booking/internal/adapter/postgres"
 	"booking/internal/adapter/razorpay"
 	"booking/internal/adapter/redis"
 	"booking/internal/adapter/tmdb"
 	"booking/internal/booking"
+	"booking/internal/cinema"
 
 	"github.com/joho/godotenv"
 )
@@ -31,6 +37,22 @@ func main() {
 	}
 	service := booking.NewService(store)
 	tmdbClient := tmdb.NewClient()
+	cinemaClient := openstreetmap.NewClient()
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		databaseURL = "postgres://cinema:cinema_dev_password@localhost:5433/cinema_booking?sslmode=disable"
+	}
+	databaseCtx, cancelDatabaseCtx := context.WithTimeout(context.Background(), 5*time.Second)
+	postgresStore, cinemaStoreErr := postgres.Open(databaseCtx, databaseURL)
+	cancelDatabaseCtx()
+	var cinemaStore cinema.DemoBookingStore
+	if cinemaStoreErr != nil {
+		log.Printf("Demo PostgreSQL booking is unavailable: %v", cinemaStoreErr)
+	} else {
+		cinemaStore = postgresStore
+		defer postgresStore.Close()
+	}
 
 	razorpayKey := os.Getenv("RAZORPAY_KEY_ID")
 	razorpaySecret := os.Getenv("RAZORPAY_KEY_SECRET")
@@ -177,6 +199,217 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(movies)
+	})
+
+	http.HandleFunc("/api/movies/now-playing", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		page, err := parseMoviePage(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		movies, err := tmdbClient.GetNowPlayingMovies(page)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(movies)
+	})
+
+	http.HandleFunc("/api/movies/new-releases", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		page, err := parseMoviePage(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		movies, err := tmdbClient.GetNewReleases(page)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(movies)
+	})
+
+	http.HandleFunc("/api/cinemas/nearby", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		location := strings.TrimSpace(r.URL.Query().Get("location"))
+		latitudeText := r.URL.Query().Get("lat")
+		longitudeText := r.URL.Query().Get("lon")
+		var coordinates *cinema.Coordinates
+		if latitudeText != "" || longitudeText != "" {
+			latitude, latitudeErr := strconv.ParseFloat(latitudeText, 64)
+			longitude, longitudeErr := strconv.ParseFloat(longitudeText, 64)
+			if latitudeErr != nil || longitudeErr != nil {
+				http.Error(w, "lat and lon must both be valid coordinates", http.StatusBadRequest)
+				return
+			}
+			coordinates = &cinema.Coordinates{Latitude: latitude, Longitude: longitude}
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		result, err := cinemaClient.Nearby(ctx, location, coordinates)
+		if err != nil {
+			status := http.StatusBadGateway
+			if strings.Contains(err.Error(), "provide a location") ||
+				strings.Contains(err.Error(), "at most 160 characters") ||
+				strings.Contains(err.Error(), "out of range") {
+				status = http.StatusBadRequest
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	})
+
+	http.HandleFunc("/api/demo/showtimes", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cinemaStore == nil {
+			http.Error(w, "Demo booking database is unavailable; start PostgreSQL with docker compose up -d postgres", http.StatusServiceUnavailable)
+			return
+		}
+		showtimes, err := cinemaStore.ListShowtimes(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(showtimes)
+	})
+
+	http.HandleFunc("/api/demo/showtimes/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cinemaStore == nil {
+			http.Error(w, "Demo booking database is unavailable; start PostgreSQL with docker compose up -d postgres", http.StatusServiceUnavailable)
+			return
+		}
+		showtimeID := strings.TrimPrefix(r.URL.Path, "/api/demo/showtimes/")
+		showtimeID = strings.TrimSuffix(showtimeID, "/seats")
+		seats, err := cinemaStore.ListSeats(r.Context(), showtimeID)
+		if err != nil {
+			if err == postgres.ErrShowtimeNotFound {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(seats)
+	})
+
+	http.HandleFunc("/api/demo/bookings", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cinemaStore == nil {
+			http.Error(w, "Demo booking database is unavailable; start PostgreSQL with docker compose up -d postgres", http.StatusServiceUnavailable)
+			return
+		}
+		customer := strings.TrimSpace(r.URL.Query().Get("customer"))
+		if customer == "" {
+			http.Error(w, "customer query parameter is required", http.StatusBadRequest)
+			return
+		}
+		reservations, err := cinemaStore.ListBookings(r.Context(), customer)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(reservations)
+	})
+
+	http.HandleFunc("/api/demo/bookings/", func(w http.ResponseWriter, r *http.Request) {
+		if cinemaStore == nil {
+			http.Error(w, "Demo booking database is unavailable; start PostgreSQL with docker compose up -d postgres", http.StatusServiceUnavailable)
+			return
+		}
+		bookingID := strings.TrimPrefix(r.URL.Path, "/api/demo/bookings/")
+		switch r.Method {
+		case http.MethodGet:
+			reservation, err := cinemaStore.GetBooking(r.Context(), bookingID)
+			if err != nil {
+				if err == postgres.ErrBookingNotFound {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(reservation)
+		case http.MethodPost:
+			var request struct {
+				ShowtimeID string `json:"showtime_id"`
+				SeatID     string `json:"seat_id"`
+				MovieID    string `json:"movie_id"`
+				MovieTitle string `json:"movie_title"`
+				Customer   string `json:"customer"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, "Invalid request body", http.StatusBadRequest)
+				return
+			}
+			request.MovieTitle = strings.TrimSpace(request.MovieTitle)
+			request.Customer = strings.TrimSpace(request.Customer)
+			if request.ShowtimeID == "" || request.SeatID == "" || request.MovieID == "" ||
+				request.MovieTitle == "" || len(request.MovieTitle) > 200 ||
+				request.Customer == "" || len(request.Customer) > 100 {
+				http.Error(w, "showtime_id, seat_id, movie_id, movie_title (max 200 characters), and customer (max 100 characters) are required", http.StatusBadRequest)
+				return
+			}
+			reservation, err := cinemaStore.BookSeat(r.Context(), request.ShowtimeID, request.SeatID, request.MovieID, request.MovieTitle, request.Customer)
+			if err != nil {
+				switch err {
+				case postgres.ErrShowtimeNotFound, postgres.ErrSeatNotFound:
+					http.Error(w, err.Error(), http.StatusNotFound)
+				case postgres.ErrSeatUnavailable:
+					http.Error(w, err.Error(), http.StatusConflict)
+				default:
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(reservation)
+		case http.MethodDelete:
+			if err := cinemaStore.CancelBooking(r.Context(), bookingID); err != nil {
+				if err == postgres.ErrBookingNotFound {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
 
 	http.HandleFunc("/api/movies/upcoming", func(w http.ResponseWriter, r *http.Request) {

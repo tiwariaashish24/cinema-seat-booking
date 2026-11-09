@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, posterUrl, type SampleMovie, type TmdbMovie } from "@/lib/api";
-import { Badge } from "@/components/ui/badge";
+import { api, posterUrl, type TmdbMovie } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,26 +19,11 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "upcoming", label: "Upcoming" },
 ];
 
-function sampleId(m: SampleMovie) {
-  return m.ID ?? m.id ?? "";
-}
-function sampleTitle(m: SampleMovie) {
-  return m.Title ?? m.title ?? "Untitled";
-}
-function sampleDesc(m: SampleMovie) {
-  return m.Description ?? m.description ?? "";
-}
-function sampleSeats(m: SampleMovie) {
-  return m.Seats ?? m.seats ?? 0;
-}
-
 export default function HomePage() {
-  const [tab, setTab] = useState<Tab>("popular");
+  const [tab, setTab] = useState<Tab>("showing");
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<TmdbMovie[] | null>(null);
-  const [samples, setSamples] = useState<SampleMovie[]>([]);
-  const [samplesLoaded, setSamplesLoaded] = useState(false);
   const [tmdb, setTmdb] = useState<Record<Tab, TmdbMovie[]>>({
     showing: [],
     popular: [],
@@ -67,38 +51,49 @@ export default function HomePage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [released, setReleased] = useState<number | null>(null);
+  const [newReleases, setNewReleases] = useState<TmdbMovie[]>([]);
+  const [newReleasesLoaded, setNewReleasesLoaded] = useState(false);
 
   useEffect(() => {
-    api
-      .listMovies()
-      .then(setSamples)
-      .catch((e) => setErrors((p) => ({ ...p, showing: String(e) })))
-      .finally(() => setSamplesLoaded(true));
-    (Object.keys(tmdb) as Tab[])
-      .filter((t) => t !== "showing")
-      .forEach((t) => {
-        const fn = { popular: api.popular, trending: api.trending, upcoming: api.upcoming }[t];
-        fn(1)
-          .then((ms) => {
-            setTmdb((p) => ({ ...p, [t]: ms }));
-            setHasMore((p) => ({ ...p, [t]: ms.length === PAGE_SIZE }));
-            setLoaded((p) => ({ ...p, [t]: true }));
-          })
-          .catch((e) => {
-            setErrors((p) => ({ ...p, [t]: String(e) }));
-            setLoaded((p) => ({ ...p, [t]: true }));
-          });
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const loaders: Record<Tab, (page: number) => Promise<TmdbMovie[]>> = {
+      showing: api.nowPlaying,
+      popular: api.popular,
+      trending: api.trending,
+      upcoming: api.upcoming,
+    };
+    (Object.keys(loaders) as Tab[]).forEach((currentTab) => {
+      loaders[currentTab](1)
+        .then((movies) => {
+          setTmdb((previous) => ({ ...previous, [currentTab]: movies }));
+          setHasMore((previous) => ({ ...previous, [currentTab]: movies.length === PAGE_SIZE }));
+        })
+        .catch((error) =>
+          setErrors((previous) => ({ ...previous, [currentTab]: String(error) })),
+        )
+        .finally(() =>
+          setLoaded((previous) => ({ ...previous, [currentTab]: true })),
+        );
+    });
+    api.newReleases(1)
+      .then(setNewReleases)
+      .catch((error) =>
+        setErrors((previous) => ({ ...previous, newReleases: String(error) })),
+      )
+      .finally(() => setNewReleasesLoaded(true));
   }, []);
 
   async function loadMoreMovies() {
-    if (tab === "showing" || loadingMore || pages[tab] >= MAX_PAGE) return;
+    if (loadingMore || pages[tab] >= MAX_PAGE) return;
 
     setLoadingMore(true);
     const nextPage = pages[tab] + 1;
     try {
-      const fn = { popular: api.popular, trending: api.trending, upcoming: api.upcoming }[tab];
+      const fn = {
+        showing: api.nowPlaying,
+        popular: api.popular,
+        trending: api.trending,
+        upcoming: api.upcoming,
+      }[tab];
       const movies = await fn(nextPage);
       setTmdb((p) => ({ ...p, [tab]: [...p[tab], ...movies] }));
       setPages((p) => ({ ...p, [tab]: nextPage }));
@@ -189,67 +184,44 @@ export default function HomePage() {
             ))}
           </div>
 
-          {errors[tab] && (
-            <p className="text-sm text-destructive">
-              Could not load {tab} movies: {errors[tab]}
-            </p>
-          )}
-
+          <p className="text-xs text-muted-foreground">
+            Movie listings from TMDB. Theatre listings and booking inventory are
+            shown on each movie page.
+          </p>
           {tab === "showing" ? (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {!samplesLoaded &&
-                [0, 1, 2].map((i) => <Skeleton key={i} className="h-36 w-full" />)}
-              {samplesLoaded && samples.length === 0 && !errors.showing && (
-                <p className="text-sm text-muted-foreground">No movies are currently showing.</p>
-              )}
-              {samples.map((m) => (
-                <Card key={sampleId(m)} className="overflow-hidden">
-                  <div className="bg-primary/10 px-4 pt-4">
-                    <div className="flex h-24 items-center justify-center rounded-md bg-gradient-to-br from-primary/30 to-primary/5 text-2xl font-bold text-primary">
-                      {sampleTitle(m).charAt(0)}
-                    </div>
-                  </div>
-                  <CardContent className="space-y-2 pt-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold">{sampleTitle(m)}</h3>
-                      <Badge variant="secondary">{sampleSeats(m)} seats</Badge>
-                    </div>
-                    <p className="line-clamp-2 text-sm text-muted-foreground">
-                      {sampleDesc(m)}
-                    </p>
-                    <Button
-                      size="sm"
-                      className="w-full"
-                      render={<Link href={`/movie/${sampleId(m)}`} />}
-                    >
-                      Select seats
-                    </Button>
-                  </CardContent>
-                </Card>
-              ))}
+            <div className="space-y-8">
+              <section className="space-y-3">
+                <h2 className="text-lg font-semibold">Now Playing in Cinemas</h2>
+                <MovieGrid
+                  movies={tmdb.showing}
+                  loading={!loaded.showing}
+                  error={errors.showing}
+                  hasMore={hasMore.showing}
+                  loadingMore={loadingMore}
+                  onLoadMore={loadMoreMovies}
+                />
+              </section>
+              <section className="space-y-3">
+                <h2 className="text-lg font-semibold">New Releases</h2>
+                <MovieGrid
+                  movies={newReleases}
+                  loading={!newReleasesLoaded}
+                  error={errors.newReleases}
+                  hasMore={false}
+                  loadingMore={false}
+                  onLoadMore={() => {}}
+                />
+              </section>
             </div>
           ) : (
-            <>
-              {loaded[tab] && tmdb[tab].length === 0 && !errors[tab] && (
-                <p className="text-sm text-muted-foreground">No movies found.</p>
-              )}
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              {!loaded[tab] && !errors[tab] &&
-                [0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
-                  <Skeleton key={i} className="h-72 w-full" />
-                ))}
-              {tmdb[tab].map((m) => (
-                <TmdbCard key={m.id} movie={m} />
-              ))}
-              </div>
-              {hasMore[tab] && (
-                <div className="mt-6 flex justify-center">
-                  <Button variant="outline" onClick={loadMoreMovies} disabled={loadingMore}>
-                    {loadingMore ? "Loading…" : "Load more movies"}
-                  </Button>
-                </div>
-              )}
-            </>
+            <MovieGrid
+              movies={tmdb[tab]}
+              loading={!loaded[tab]}
+              error={errors[tab]}
+              hasMore={hasMore[tab]}
+              loadingMore={loadingMore}
+              onLoadMore={loadMoreMovies}
+            />
           )}
         </>
       )}
@@ -257,10 +229,67 @@ export default function HomePage() {
   );
 }
 
+function MovieGrid({
+  movies,
+  loading,
+  error,
+  hasMore,
+  loadingMore,
+  onLoadMore,
+}: {
+  movies: TmdbMovie[];
+  loading: boolean;
+  error?: string;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
+}) {
+  return (
+    <div>
+      {error && (
+        <p className="mb-3 text-sm text-destructive">
+          Could not load movies: {error}
+        </p>
+      )}
+      {loading && !error && (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+            <Skeleton key={i} className="h-72 w-full" />
+          ))}
+        </div>
+      )}
+      {!loading && movies.length === 0 && !error && (
+        <p className="text-sm text-muted-foreground">No movies found.</p>
+      )}
+      {movies.length > 0 && (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          {movies.map((movie) => (
+            <TmdbCard key={movie.id} movie={movie} />
+          ))}
+        </div>
+      )}
+      {hasMore && (
+        <div className="mt-6 flex justify-center">
+          <Button variant="outline" onClick={onLoadMore} disabled={loadingMore}>
+            {loadingMore ? "Loading…" : "Load more movies"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TmdbCard({ movie }: { movie: TmdbMovie }) {
   const img = posterUrl(movie.poster_path);
+  const params = new URLSearchParams({
+    title: movie.title,
+    overview: movie.overview ?? "",
+    poster: movie.poster_path ?? "",
+    release_date: movie.release_date ?? "",
+    rating: String(movie.vote_average ?? 0),
+  });
   return (
-    <Link href={`/movie/tmdb-${movie.id}?title=${encodeURIComponent(movie.title)}&poster=${encodeURIComponent(movie.poster_path ?? "")}`}>
+    <Link href={`/movie/tmdb-${movie.id}?${params.toString()}`}>
       <Card className="h-full overflow-hidden transition-shadow hover:shadow-md">
         {img ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -276,6 +305,7 @@ function TmdbCard({ movie }: { movie: TmdbMovie }) {
             <span>{movie.release_date?.slice(0, 4) || "—"}</span>
             <span>★ {movie.vote_average?.toFixed(1)}</span>
           </div>
+          <p className="pt-1 text-xs font-medium text-primary">View details &amp; cinemas</p>
         </CardContent>
       </Card>
     </Link>

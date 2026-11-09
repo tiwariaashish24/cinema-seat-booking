@@ -30,6 +30,58 @@ export interface TmdbMovie {
   vote_average: number;
 }
 
+export interface NearbyCinema {
+  id: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  distance_km: number;
+  map_url: string;
+}
+
+export interface NearbyCinemaResult {
+  location: string;
+  source: string;
+  attribution: string;
+  cinemas: NearbyCinema[];
+}
+
+export interface DemoShowtime {
+  id: string;
+  cinema: string;
+  address: string;
+  screen: string;
+  starts_at: string;
+  language: string;
+  format: string;
+  price_paise: number;
+  available_seats: number;
+  is_demo: boolean;
+}
+
+export interface DemoSeat {
+  id: string;
+  label: string;
+  status: "available" | "booked";
+  price_paise: number;
+}
+
+export interface DemoReservation {
+  id: string;
+  showtime_id: string;
+  movie_id: string;
+  movie_title: string;
+  cinema: string;
+  screen: string;
+  seat: string;
+  customer: string;
+  status: "confirmed" | "cancelled";
+  starts_at: string;
+  created_at: string;
+  is_demo: boolean;
+}
+
 export interface Order {
   id: string;
   amount: number;
@@ -78,8 +130,30 @@ export const api = {
   upcoming: (page = 1) => req<TmdbMovie[]>(`/api/movies/upcoming?page=${page}`),
   popular: (page = 1) => req<TmdbMovie[]>(`/api/movies/popular?page=${page}`),
   trending: (page = 1) => req<TmdbMovie[]>(`/api/movies/trending?page=${page}`),
+  nowPlaying: (page = 1) => req<TmdbMovie[]>(`/api/movies/now-playing?page=${page}`),
+  newReleases: (page = 1) => req<TmdbMovie[]>(`/api/movies/new-releases?page=${page}`),
   search: (query: string) =>
     req<TmdbMovie[]>(`/api/movies/search?query=${encodeURIComponent(query)}`),
+  nearbyCinemas: (location: string) =>
+    req<NearbyCinemaResult>(`/api/cinemas/nearby?location=${encodeURIComponent(location)}`),
+  nearbyCinemasAt: (latitude: number, longitude: number) =>
+    req<NearbyCinemaResult>(`/api/cinemas/nearby?lat=${latitude}&lon=${longitude}`),
+  demoShowtimes: () => req<DemoShowtime[]>("/api/demo/showtimes"),
+  demoSeats: (showtimeId: string) =>
+    req<DemoSeat[]>(`/api/demo/showtimes/${encodeURIComponent(showtimeId)}/seats`),
+  createDemoBooking: (booking: {
+    showtime_id: string;
+    seat_id: string;
+    movie_id: string;
+    movie_title: string;
+    customer: string;
+  }) => post<DemoReservation>("/api/demo/bookings/", booking),
+  getDemoBooking: (id: string) =>
+    req<DemoReservation>(`/api/demo/bookings/${encodeURIComponent(id)}`),
+  listDemoBookings: (customer: string) =>
+    req<DemoReservation[]>(`/api/demo/bookings?customer=${encodeURIComponent(customer)}`),
+  cancelDemoBooking: (id: string) =>
+    req<void>(`/api/demo/bookings/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   createOrder: (bookingId: string, amount: number) =>
     post<Order>("/payment/create-order", { booking_id: bookingId, amount }),

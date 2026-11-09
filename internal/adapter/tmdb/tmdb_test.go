@@ -19,7 +19,6 @@ func TestGetPopularMoviesUsesRequestedPage(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Error("authorization header did not contain the configured bearer token")
 		}
-
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(MovieResponse{
 			Results: []Movie{{ID: 42, Title: "Test Movie"}},
@@ -46,7 +45,6 @@ func TestGetPopularMoviesRetriesTransientFailure(t *testing.T) {
 			http.Error(w, "temporary upstream failure", http.StatusServiceUnavailable)
 			return
 		}
-
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(MovieResponse{
 			Results: []Movie{{ID: 42, Title: "Test Movie"}},
@@ -66,5 +64,35 @@ func TestGetPopularMoviesRetriesTransientFailure(t *testing.T) {
 	}
 	if len(movies) != 1 || movies[0].ID != 42 || movies[0].Title != "Test Movie" {
 		t.Fatalf("GetPopularMovies(1) = %#v, want test movie", movies)
+	}
+}
+
+func TestGetNowPlayingMoviesUsesIndiaRegionAndRequestedPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/movie/now_playing" {
+			t.Errorf("request path = %q, want /movie/now_playing", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("region"); got != "IN" {
+			t.Errorf("region = %q, want IN", got)
+		}
+		if got := r.URL.Query().Get("page"); got != "3" {
+			t.Errorf("page = %q, want 3", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(MovieResponse{
+			Results: []Movie{{ID: 99, Title: "Now Playing"}},
+		}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := &Client{apiKey: "test-token", baseURL: server.URL}
+	movies, err := client.GetNowPlayingMovies(3)
+	if err != nil {
+		t.Fatalf("GetNowPlayingMovies(3) error = %v", err)
+	}
+	if len(movies) != 1 || movies[0].ID != 99 {
+		t.Fatalf("GetNowPlayingMovies(3) = %#v, want the now-playing movie", movies)
 	}
 }

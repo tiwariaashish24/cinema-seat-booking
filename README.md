@@ -174,7 +174,14 @@ Start a local Redis server and make sure it is reachable at:
 localhost:6379
 ```
 
-The current application entry point uses this Redis address.
+Start the local demo-booking PostgreSQL database from the project root:
+
+```bash
+docker compose up -d postgres
+```
+
+The Go server creates the sample cinema, screen, showtimes, and seat data on its first
+successful database connection. All of these records are explicitly marked as demo data.
 
 ### 4. Configure environment variables
 
@@ -182,6 +189,7 @@ Create a `.env` file in the project root using `.env.example` as a template:
 
 ```env
 TMDB_TOKEN=your_tmdb_read_access_token
+DATABASE_URL=postgres://cinema:cinema_dev_password@localhost:5433/cinema_booking?sslmode=disable
 RAZORPAY_KEY_ID=your_razorpay_key_id
 RAZORPAY_KEY_SECRET=your_razorpay_key_secret
 RAZORPAY_TEST_MODE=true
@@ -216,6 +224,7 @@ The current server exposes the following endpoints:
 | `POST`   | `/admin/release-expired`                    | Release expired seat holds      |
 | `GET`    | `/bookings/{movieID}`                       | List bookings for a movie       |
 | `GET`    | `/movies`                                   | List the sample movies          |
+| `GET`    | `/api/movies/now-playing?page={page}`         | Get movies currently playing in India from TMDB |
 | `GET`    | `/api/movies/upcoming?page={page}`           | Get upcoming movies from TMDB   |
 | `GET`    | `/api/movies/popular?page={page}`            | Get popular movies from TMDB    |
 | `GET`    | `/api/movies/trending?page={page}`           | Get trending movies from TMDB   |
@@ -295,6 +304,14 @@ GET /api/movies/search?query=inception
 ```
 
 TMDB endpoints require a TMDB API Read Access Token in `TMDB_TOKEN`. The movie lists return 20 results per page; `page` defaults to 1.
+
+### Cinemas and demo bookings
+
+- `GET /api/cinemas/nearby?location=Delhi%20NCR` finds real mapped cinema locations in India using OpenStreetMap Nominatim and Overpass. You can also pass `lat` and `lon` after granting browser location permission. Map results may be incomplete; OpenStreetMap does not provide showtimes, ticket inventory, or seat availability.
+- `GET /api/demo/showtimes` and `GET /api/demo/showtimes/{showtimeID}/seats` return sample data from local PostgreSQL.
+- `POST /api/demo/bookings/` reserves a sample seat transactionally in PostgreSQL. `GET /api/demo/bookings?customer={name}` lists that browser user's demo bookings; `GET` and `DELETE /api/demo/bookings/{bookingID}` retrieve or cancel a reservation.
+
+The sample cinema, schedule, prices, seats, and reservations are **demo data only**. They do not represent any real cinema or reserve a real ticket. The cinema lookup, TMDB movie listings, and local demo seat inventory are kept separate so an authorized cinema ticketing provider can be integrated later without presenting sample availability as live.
 
 ### Payment endpoints
 

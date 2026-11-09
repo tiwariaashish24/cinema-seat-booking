@@ -74,6 +74,7 @@ export function BookingView() {
           <Button
             variant="outline"
             className="mt-4"
+            nativeButton={false}
             render={<Link href="/" />}
           >
             Back to movies
@@ -236,6 +237,7 @@ export function BookingView() {
             <Button
               variant="outline"
               className="mt-3"
+              nativeButton={false}
               render={<Link href="/" />}
             >
               Book another seat
@@ -251,6 +253,7 @@ export function BookingView() {
             <Button
               variant="outline"
               className="mt-3"
+              nativeButton={false}
               render={<Link href={`/movie/${booking.movie_id}`} />}
             >
               Pick another seat

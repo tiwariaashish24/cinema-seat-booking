@@ -99,6 +99,15 @@ func (c *Client) GetUpcomingMovies(page int) ([]Movie, error) {
 	return c.makePagedRequest("/movie/upcoming", page)
 }
 
+func (c *Client) GetNowPlayingMovies(page int) ([]Movie, error) {
+	return c.makePagedRequest("/movie/now_playing?region=IN", page)
+}
+
+func (c *Client) GetNewReleases(page int) ([]Movie, error) {
+	today := time.Now().Format("2006-01-02")
+	return c.makePagedRequest(fmt.Sprintf("/discover/movie?sort_by=primary_release_date.desc&primary_release_date.lte=%s&region=IN", today), page)
+}
+
 func (c *Client) GetPopularMovies(page int) ([]Movie, error) {
 	return c.makePagedRequest("/movie/popular", page)
 }
