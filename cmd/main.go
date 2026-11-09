@@ -31,9 +31,11 @@ func main() {
 	testMode := testModeStr == "true" || testModeStr == "1"
 
 	var paymentClient razorpay.RazorpayClient
+	var mockClient *razorpay.MockClient
 	if razorpayKey == "" || razorpaySecret == "" {
 		log.Println("Razorpay credentials not found, using mock client")
-		paymentClient = razorpay.NewMockClient("test_key", "test_secret", true)
+		mockClient = razorpay.NewMockClient("test_key", "test_secret", true)
+		paymentClient = mockClient
 	} else {
 		paymentClient = razorpay.NewClient(razorpayKey, razorpaySecret, testMode)
 	}
@@ -375,6 +377,38 @@ func main() {
 		}
 
 		w.WriteHeader(http.StatusOK)
+	})
+
+	http.HandleFunc("/payment/mock-pay", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if mockClient == nil {
+			http.Error(w, "mock payments are only available in test mode", http.StatusNotFound)
+			return
+		}
+
+		var req struct {
+			OrderID string  `json:"order_id"`
+			Amount  float64 `json:"amount"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if req.OrderID == "" {
+			http.Error(w, "order_id is required", http.StatusBadRequest)
+			return
+		}
+
+		payment := mockClient.CreatePayment(req.OrderID, fmt.Sprintf("%.2f", req.Amount))
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(payment)
 	})
 
 	http.HandleFunc("/payment/status", func(w http.ResponseWriter, r *http.Request) {
